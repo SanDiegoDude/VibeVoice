@@ -1947,9 +1947,7 @@ Or paste text directly and it will auto-assign speakers.""",
                     label="Streaming Audio (Real-time)",
                     type="numpy",
                     elem_classes="audio-output",
-                    streaming=True,  # Enable streaming mode
                     autoplay=True,
-                    show_download_button=False,  # Explicitly show download button
                     visible=True
                 )
                 
@@ -1960,7 +1958,6 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_classes="audio-output complete-audio-section",
                     streaming=False,  # Non-streaming mode
                     autoplay=False,
-                    show_download_button=True,  # Explicitly show download button
                     visible=False,  # Initially hidden, shown when audio is ready
                     elem_id="complete-audio-output"
                 )
@@ -2442,8 +2439,7 @@ def main():
     # Launch the interface
     try:
         interface.queue(
-            max_size=20,  # Maximum queue size
-            default_concurrency_limit=1  # Process one request at a time
+            max_size=20  # Maximum queue size
         ).launch(
             share=args.share,
             server_port=7590,  # Always use port 7590 for network access

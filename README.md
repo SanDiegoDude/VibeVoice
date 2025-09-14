@@ -460,3 +460,32 @@ We would like to thank the following contributors for their valuable work that e
 - [Dao-AILab/flash-attention](https://github.com/Dao-AILab/flash-attention): For the FlashAttention2 implementation
 
 These contributions have made VibeVoice more accessible across different hardware configurations and operating systems, ensuring a smoother experience for all users.
+
+# VibeVoice
+
+This repository contains the VibeVoice demo and supporting code.
+
+## VoiceLab (New UI & API)
+A new modular UI and server can run alongside the existing `main.py` Gradio app without changes to it.
+
+- Launcher: `VoiceLab.py`
+  - Starts server and web UI together.
+  - Example: `python VoiceLab.py --host 0.0.0.0 --server-port 8081`
+  - Flags: `--skip-server`, `--skip-web`, `--no-reload`
+- Server (FastAPI): `server/app/main.py`
+  - Start standalone: `uvicorn server.app.main:app --host 0.0.0.0 --port 8081 --reload`
+  - Env: `VIBEVOICE_MODELS` to control model dropdown
+- Web (React + Vite): `web/`
+  - Start standalone: `cd web && npm install && npm run dev`
+  - Opens http://localhost:5173
+
+### Requirements
+- Core (VibeVoice) and VoiceLab extras are in `requirements.txt`.
+- For 4-bit: `bitsandbytes`, `huggingface_hub`
+- For audio editing: `ffmpeg` (system), `pydub`
+
+### Data layout
+- Templates: `data/templates/{monologue|dialogue}/{template}/`
+  - `current.txt`, `meta.json`, `versions/*.txt`
+
+This separation keeps `main.py` intact while enabling an agent-driven, modular UX in VoiceLab.

@@ -1,0 +1,35 @@
+# Core (VibeVoice - needed for main.py)
+# These align with pyproject but provide a simple pip install path
+torch
+accelerate==1.6.0
+transformers==4.51.3
+diffusers
+tqdm
+numpy
+scipy
+librosa
+ml-collections
+absl-py
+gradio
+av
+aiortc
+openai
+python-dotenv
+
+# Optional: 4-bit quantization support
+bitsandbytes
+huggingface_hub
+
+# VoiceLab (server + web integration helpers)
+# Server-side API and audio tools
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+aiofiles==24.1.0
+pydub==0.25.1
+# torchaudio optional if you prefer pure torch ops; requires matching torch cuda build
+# torchaudio==2.4.1
+
+# For audio editing via ffmpeg (system dependency)
+# Ensure ffmpeg is installed on the system
+
