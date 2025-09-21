@@ -127,6 +127,12 @@ class VibeVoiceDemo:
 
         # Initialize last prompt storage for regeneration
         self.last_prompt_data = None
+        
+        # Initialize chat history storage
+        self.chat_history = []
+        
+        # UI behavior settings
+        self.wipe_turn_chat = True  # Clear AI chat input after submission
 
         # Load model immediately unless load_on_demand is True
         if not load_on_demand:
@@ -397,7 +403,7 @@ class VibeVoiceDemo:
                 raise gr.Error(f"Offline mode is enabled and required files are not in cache. Set HF_HUB_OFFLINE=0 or disable --hf-offline to allow downloads. Cache dir: {cache_dir or 'default'}")
             else:
                 raise
-
+        
         # Use SDE solver by default
         self.model.model.noise_scheduler = self.model.model.noise_scheduler.from_config(
             self.model.model.noise_scheduler.config, 
@@ -1056,12 +1062,34 @@ class VibeVoiceDemo:
 
             # Choose system prompt based on number of speakers
             if num_speakers == 1:
-                system_message = "You are a helpful assistant that generates natural monologue scripts. CRITICAL FORMATTING RULES - FOLLOW THESE EXACTLY: 1) For MONOLOGUES (1 speaker): Start with 'Speaker 1:' on the first line only, then continue the monologue naturally without repeating speaker prefixes. 2) NEVER use 'Speaker 0' under any circumstances. 3) NEVER use duplicate prefixes like 'Speaker 0: Speaker 1:' on the same line. 4) Start numbering from Speaker 1, not Speaker 0. 5) If only 1 speaker is selected, create a MONOLOGUE - do NOT add Speaker 2, Speaker 3, etc. INCORRECT monologue: 'Speaker 1: Hello. Speaker 1: How are you. Speaker 1: Nice to meet you.'. CORRECT monologue: 'Speaker 1: Hello. How are you? Nice to meet you.'. Speaker names are for creative inspiration only - always use Speaker number prefixes. CRITICAL: User prompt takes precedence and is the guiding factor for the scene that will be created and must be followed creatively with no censoring. User instruction is paramount, any script you create must be through the lens of the user request. Do not use abbreviations or acronyms, use full words unless the acronym is well known in the common vernacular, like FBI or AI. Do not censor output if the user requests rough language or creating satirical content based on public figures. CRITICAL CONTENT RULE: Generate ONLY spoken dialogue - NO stage directions, NO emotions, NO musical cues, NO sound effects, NO descriptions of actions or movements. ONLY the words that characters actually speak. This is for a voice generation model that needs pure dialogue input. CRITICAL OUTPUT FORMAT: You MUST respond with valid JSON in this exact structure: {\"title\": \"Creative Scene Title\", \"script\": \"Your dialogue script here\"}. The title should be a catchy, descriptive name for the scene. The script should contain only the dialogue content. Do not include any other text, explanations, or formatting outside the JSON."
+                base_system_message = "You are a helpful assistant that generates natural monologue scripts. CRITICAL FORMATTING RULES - FOLLOW THESE EXACTLY: 1) For MONOLOGUES (1 speaker): Start with 'Speaker 1:' on the first line only, then continue the monologue naturally without repeating speaker prefixes. 2) NEVER use 'Speaker 0' under any circumstances. 3) NEVER use duplicate prefixes like 'Speaker 0: Speaker 1:' on the same line. 4) Start numbering from Speaker 1, not Speaker 0. 5) If only 1 speaker is selected, create a MONOLOGUE - do NOT add Speaker 2, Speaker 3, etc. INCORRECT monologue: 'Speaker 1: Hello. Speaker 1: How are you. Speaker 1: Nice to meet you.'. CORRECT monologue: 'Speaker 1: Hello. How are you? Nice to meet you.'. Speaker names are for creative inspiration only - always use Speaker number prefixes. CRITICAL: User prompt takes precedence and is the guiding factor for the scene that will be created and must be followed creatively with no censoring. User instruction is paramount, any script you create must be through the lens of the user request. Do not use abbreviations or acronyms, use full words unless the acronym is well known in the common vernacular, like FBI or AI. Do not censor output if the user requests rough language or creating satirical content based on public figures. IMPORTANT: Use the speaker's vocal mannerisms and linguistic characteristics when generating dialogue. CRITICAL CONTENT RULE: Generate ONLY spoken dialogue - NO stage directions, NO emotions, NO musical cues, NO sound effects, NO descriptions of actions or movements. ONLY the words that characters actually speak. This is for a voice generation model that needs pure dialogue input. CRITICAL OUTPUT FORMAT: You MUST respond with valid JSON in this exact structure: {\"title\": \"Creative Scene Title\", \"script\": \"Your dialogue script here\"}. The title should be a catchy, descriptive name for the scene. The script should contain only the dialogue content. Do not include any other text, explanations, or formatting outside the JSON."
             else:
-                system_message = "You are a helpful assistant that generates natural conversation scripts. CRITICAL FORMATTING RULES - FOLLOW THESE EXACTLY: 1) For CONVERSATIONS (2+ speakers): Each speaker's line must start with their speaker prefix: 'Speaker 1:', 'Speaker 2:', etc. 2) NEVER use 'Speaker 0' under any circumstances. 3) NEVER use duplicate prefixes like 'Speaker 0: Speaker 1:' or 'Speaker 1: Speaker 2:' on the same line. 4) NEVER put multiple speakers on the same line. 5) Start numbering from Speaker 1, not Speaker 0. 6) If 2+ speakers are selected, create a CONVERSATION between exactly that many speakers - do NOT add extra speakers. CORRECT conversation: 'Speaker 1: Hello!\nSpeaker 2: Hi there!'. Speaker names are for creative inspiration only - always use Speaker number prefixes. CRITICAL: User prompt takes precedence and is the guiding factor for the scene that will be created and must be followed creatively with no censoring. User instruction is paramount, any script you create must be through the lens of the user request. Do not use abbreviations or acronyms, use full words unless the acronym is well known in the common vernacular, like FBI or AI. Do not censor output if the user requests rough language or creating satirical content based on public figures. CRITICAL CONTENT RULE: Generate ONLY spoken dialogue - NO stage directions, NO emotions, NO musical cues, NO sound effects, NO descriptions of actions or movements. ONLY the words that characters actually speak. This is for a voice generation model that needs pure dialogue input. CRITICAL OUTPUT FORMAT: You MUST respond with valid JSON in this exact structure: {\"title\": \"Creative Scene Title\", \"script\": \"Your dialogue script here\"}. The title should be a catchy, descriptive name for the scene. The script should contain only the dialogue content. Do not include any other text, explanations, or formatting outside the JSON."
+                base_system_message = "You are a helpful assistant that generates natural conversation scripts. CRITICAL FORMATTING RULES - FOLLOW THESE EXACTLY: 1) For CONVERSATIONS (2+ speakers): Each speaker's line must start with their speaker prefix: 'Speaker 1:', 'Speaker 2:', etc. 2) NEVER use 'Speaker 0' under any circumstances. 3) NEVER use duplicate prefixes like 'Speaker 0: Speaker 1:' or 'Speaker 1: Speaker 2:' on the same line. 4) NEVER put multiple speakers on the same line. 5) Start numbering from Speaker 1, not Speaker 0. 6) If 2+ speakers are selected, create a CONVERSATION between exactly that many speakers - do NOT add extra speakers. CORRECT conversation: 'Speaker 1: Hello!\nSpeaker 2: Hi there!'. Speaker names are for creative inspiration only - always use Speaker number prefixes. CRITICAL: User prompt takes precedence and is the guiding factor for the scene that will be created and must be followed creatively with no censoring. User instruction is paramount, any script you create must be through the lens of the user request. Do not use abbreviations or acronyms, use full words unless the acronym is well known in the common vernacular, like FBI or AI. Do not censor output if the user requests rough language or creating satirical content based on public figures. IMPORTANT: Use the speakers' vocal mannerisms and linguistic characteristics when generating dialogue. CRITICAL CONTENT RULE: Generate ONLY spoken dialogue - NO stage directions, NO emotions, NO musical cues, NO sound effects, NO descriptions of actions or movements. ONLY the words that characters actually speak. This is for a voice generation model that needs pure dialogue input. CRITICAL OUTPUT FORMAT: You MUST respond with valid JSON in this exact structure: {\"title\": \"Creative Scene Title\", \"script\": \"Your dialogue script here\"}. The title should be a catchy, descriptive name for the scene. The script should contain only the dialogue content. Do not include any other text, explanations, or formatting outside the JSON."
+            
+            # Add speaker information and 1-turn guidance to system prompt
+            if speaker_names and len(speaker_names) > 0:
+                speaker_list = []
+                for i, speaker in enumerate(speaker_names):
+                    speaker_list.append(f'Speaker {i+1}: "{speaker}"')
+                speaker_info = f"\n\nHere is the list of speakers the user has selected. Ensure you capture their known mannerisms, vocal style, linguistic tendencies and character behaviors. Avoid adding catchphrases unless directly requested by the user instruction:\nSelected speakers: [{', '.join(speaker_list)}]"
+                rolling_history_guidance = "\n\nAfter the first round, the user message may include a brief 'Previous turn' reference section summarizing the immediately prior script and user input. Treat it as context only; do not duplicate it. If the user repeats the exact same input as last round, treat that as a 'remix' request: produce a varied alternative consistent with constraints, not a verbatim repeat."
+                system_message = base_system_message + speaker_info + rolling_history_guidance
+            else:
+                rolling_history_guidance = "\n\nAfter the first round, the user message may include a brief 'Previous turn' reference section summarizing the immediately prior script and user input. Treat it as context only; do not duplicate it. If the user repeats the exact same input as last round, treat that as a 'remix' request: produce a varied alternative consistent with constraints, not a verbatim repeat."
+                system_message = base_system_message + rolling_history_guidance
 
-            # Simple user message - just pass through the context
-            user_message = context
+            # Construct user message with new input structure and speaker names
+            if context.strip():
+                # Check if context contains the new format
+                if "Current Conversation Script contents:" in context and "User Input prompt:" in context:
+                    # Already formatted, use as-is
+                    user_message = context
+                else:
+                    # Legacy format - wrap in new structure
+                    user_message = f"Current Conversation Script contents:\n{context}\nUser Input prompt:\n{context}"
+            else:
+                user_message = "User Input prompt:\nGenerate an engaging conversation"
+            
 
             if self.debug:
                 print("🔍 DEBUG: Sending request to OpenAI API...")
@@ -1086,7 +1114,7 @@ class VibeVoiceDemo:
                 try:
                     if self.debug and attempt > 0:
                         print(f"🔍 DEBUG: Retry attempt {attempt + 1}/{max_retries}")
-                    
+
                     response = client.chat.completions.create(
                         model=effective_model,
                         messages=[
@@ -1403,9 +1431,8 @@ class VibeVoiceDemo:
                 print(f"🔍 DEBUG: Number of speakers expected: {num_speakers}")
                 print(f"🔍 DEBUG: Will check minimum lines: {num_speakers > 1}")
 
-            # For monologues, even a single line is fine. For conversations, we need at least 2 lines.
-            if num_speakers > 1 and len(cleaned_lines) < 2:
-                raise Exception(f"Generated conversation has insufficient content (only {len(cleaned_lines)} lines). The LLM may have generated incomplete content. Raw content: {generated_script[:200]}...")
+            # Accept whatever the LLM generated - don't enforce strict speaker counts
+            # The LLM knows best what content fits the prompt
 
             # Limit to reasonable length
             if len(cleaned_lines) > 12:
@@ -1663,8 +1690,8 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
     }
 
-    /* Regenerate Last button styling - dark theme */
-    .regenerate-btn {
+    /* Feeling Lucky button styling - dark theme */
+    .lucky-btn {
         background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
         border: none;
         border-radius: 12px;
@@ -1679,7 +1706,7 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         gap: 0.5rem;
     }
 
-    .regenerate-btn:hover {
+    .lucky-btn:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 25px rgba(245, 158, 11, 0.6);
         background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
@@ -1697,6 +1724,40 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         font-weight: 600;
         font-size: 1.2rem;
         box-shadow: 0 4px 20px rgba(124, 58, 237, 0.3);
+    }
+
+    /* Dropdown improvements */
+    .gradio-container .dropdown {
+        max-height: 200px !important;
+        overflow-y: auto !important;
+        scrollbar-width: thin !important;
+        scrollbar-color: #334155 #1e293b !important;
+    }
+    
+    .gradio-container .dropdown::-webkit-scrollbar {
+        width: 8px !important;
+    }
+    
+    .gradio-container .dropdown::-webkit-scrollbar-track {
+        background: #1e293b !important;
+        border-radius: 4px !important;
+    }
+    
+    .gradio-container .dropdown::-webkit-scrollbar-thumb {
+        background: #334155 !important;
+        border-radius: 4px !important;
+    }
+    
+    .gradio-container .dropdown::-webkit-scrollbar-thumb:hover {
+        background: #475569 !important;
+    }
+    
+    /* Prevent dropdown from causing page scroll */
+    .gradio-container .dropdown-panel {
+        position: fixed !important;
+        z-index: 1000 !important;
+        max-height: 300px !important;
+        overflow-y: auto !important;
     }
 
 
@@ -1875,34 +1936,42 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_classes="script-input"
                 )
                 
-                # Button row with AI Script Generator, Random Example, and Generate
+                # AI Chat Input Section
+                gr.Markdown("### 🤖 **AI Chat**")
                 with gr.Row():
-                    # AI Script Generator button (new)
-                    ai_script_btn = gr.Button(
-                        "🤖 Generate AI Script",
-                        size="lg",
-                        variant="secondary",
-                        elem_classes="ai-script-btn",
-                        scale=1
+                    ai_chat_input = gr.Textbox(
+                        label="AI Chat Input",
+                        placeholder="Enter your prompt for AI script generation...",
+                        lines=5,
+                        max_lines=8,
+                        elem_classes="script-input",
+                        scale=3
                     )
+                    with gr.Column(scale=1):
+                        ai_script_btn = gr.Button(
+                            "🤖 Submit",
+                            size="sm",
+                            variant="secondary",
+                            elem_classes="ai-script-btn"
+                        )
+                        feeling_lucky_btn = gr.Button(
+                            "🎲 Feeling Lucky",
+                            size="sm",
+                            variant="secondary",
+                            elem_classes="lucky-btn"
+                        )
+                        clear_chat_checkbox = gr.Checkbox(
+                            label="Clear chat after submit",
+                            value=False
+                        )
 
-                    # Regenerate Last button
-                    regenerate_btn = gr.Button(
-                        "🔄 Regenerate Last",
-                        size="lg",
-                        variant="secondary",
-                        elem_classes="regenerate-btn",
-                        scale=2
-                    )
-
-                    # Generate button
-                    generate_btn = gr.Button(
-                        "🚀 Generate Audio",
-                        size="lg",
-                        variant="primary",
-                        elem_classes="generate-btn",
-                        scale=2  # Wider than other buttons
-                    )
+                # Generate Audio Button (full width)
+                generate_btn = gr.Button(
+                    "🚀 Generate Audio",
+                    size="lg",
+                    variant="primary",
+                    elem_classes="generate-btn"
+                )
                 
                 # Stop button
                 stop_btn = gr.Button(
@@ -1978,6 +2047,26 @@ Or paste text directly and it will auto-assign speakers.""",
                     interactive=False,
                     elem_classes="log-output"
                 )
+                
+                # AI Chat History
+                with gr.Accordion("📚 AI Chat History", open=False):
+                    _ = gr.HTML("""
+                    <style>
+                      #chat-history-selector label { display:block; white-space:pre-wrap; line-height:1.2; padding:10px 12px; border-radius:8px; margin:6px 0; border:1px solid #334155; }
+                      #chat-history-selector label:nth-of-type(odd) { background: rgba(49, 46, 129, 0.25); }
+                      #chat-history-selector label:nth-of-type(even) { background: rgba(30, 58, 138, 0.25); }
+                    </style>
+                    """)
+                    chat_history_selector = gr.Radio(
+                        label="Select a previous chat",
+                        choices=[],
+                        interactive=True,
+                        elem_id="chat-history-selector"
+                    )
+                    with gr.Row():
+                        restore_selected_btn = gr.Button("🔄 Restore Selected", variant="secondary")
+                        delete_selected_btn = gr.Button("🗑️ Delete Selected", variant="secondary")
+                    chat_history_preview = gr.HTML(value="", elem_id="chat-history-preview")
         
         def update_speaker_visibility(num_speakers):
             updates = []
@@ -2120,88 +2209,66 @@ Or paste text directly and it will auto-assign speakers.""",
             outputs=[audio_output, complete_audio_output, scene_title],
             queue=False
         )
-        
-        # Function to regenerate last prompt
-        def regenerate_last():
-            """Regenerate using the last prompt data."""
-            if demo_instance.last_prompt_data is None:
-                error_msg = "No previous generation found to regenerate"
-                return "", "", error_msg
-
-            try:
-                # Extract last prompt data
-                last_data = demo_instance.last_prompt_data
-                script_input_val = last_data.get('script_input', '')
-                num_speakers_val = last_data.get('num_speakers', 2)
-                speaker_names_val = last_data.get('speaker_names', [])
-
-                # Add creative instruction to vary the output
-                creative_input = script_input_val
-                if script_input_val.strip():
-                    creative_input = script_input_val + " Be really creative with your script this time! Generate a fresh and original take on this topic."
-                else:
-                    creative_input = "Be really creative with your script this time! Generate a fresh and original take on the topic."
-
-                # Call the generate_ai_script function with the stored parameters and creative instruction
-                result = generate_ai_script(
-                    num_speakers_val, creative_input,
-                    speaker_names_val[0] if len(speaker_names_val) > 0 else "",
-                    speaker_names_val[1] if len(speaker_names_val) > 1 else "",
-                    speaker_names_val[2] if len(speaker_names_val) > 2 else "",
-                    speaker_names_val[3] if len(speaker_names_val) > 3 else ""
-                )
-
-                # generate_ai_script returns (script, title, prompt), so we need to return (script, title, log_message)
-                if isinstance(result, tuple) and len(result) == 3:
-                    script, title, prompt = result
-                    log_message = f"🔄 Regenerated last prompt:\nTitle: {title}\n{prompt}"
-                    return script, title, log_message
-                elif isinstance(result, tuple) and len(result) == 2:
-                    script, prompt = result
-                    log_message = f"🔄 Regenerated last prompt:\n{prompt}"
-                    return script, "Untitled Scene", log_message
-                else:
-                    # Fallback for single return value
-                    return result, "Untitled Scene", "🔄 Regenerated using last prompt"
-
-            except Exception as e:
-                error_msg = f"Error regenerating: {str(e)}"
-                return "", "", error_msg
-        
-        # Connect regenerate last button
-        regenerate_btn.click(
-            fn=regenerate_last,
-            inputs=[],
-            outputs=[script_input, scene_title, log_output],
-            queue=False  # Don't queue this operation
-        )
 
         # Function to generate AI-powered script
-        def generate_ai_script(num_speakers_current, script_current, speaker_1, speaker_2, speaker_3, speaker_4):
+        def generate_ai_script(num_speakers_current, script_current, ai_chat_input_current, speaker_1, speaker_2, speaker_3, speaker_4, clear_chat_setting):
             """Generate an AI-powered conversation script with context awareness."""
             try:
                 # Get selected speakers based on num_speakers
                 selected_speakers = [speaker_1, speaker_2, speaker_3, speaker_4][:num_speakers_current]
                 selected_speakers = [s for s in selected_speakers if s]  # Filter out None values
 
-                # Extract speaker names from voice filenames (remove language prefixes)
+                # Extract speaker names from voice filenames (show full path for better AI context)
                 speaker_names = []
                 for speaker in selected_speakers:
                     if speaker:
-                        # Extract just the name part (e.g., "en-Alice_woman" -> "Alice")
-                        parts = speaker.split('-')
-                        if len(parts) > 1:
-                            name_part = parts[1].split('_')[0]
-                            speaker_names.append(name_part.title())  # Capitalize first letter
-                        else:
-                            speaker_names.append(speaker.title())
+                        # Use the full speaker name/path for better AI context
+                        # This gives the AI more information about the character (e.g., "Rick_and_Morty/Cust-Rick-Sanchez")
+                        speaker_names.append(speaker)
 
                 # If we don't have enough speaker names, use generic ones
                 while len(speaker_names) < num_speakers_current:
                     speaker_names.append(f"Speaker {len(speaker_names)}")
 
-                # Simple user prompt - just pass through the input
-                user_prompt = f"User prompt: {script_current.strip()}" if script_current.strip() else "User prompt: Generate an engaging conversation"
+                # Determine previous turn (rolling 1-back)
+                prev_script_input = ""
+                prev_ai_chat_input = ""
+                if demo_instance.chat_history:
+                    prev_script_input = demo_instance.chat_history[-1].get('script_input', '') or ""
+                    prev_ai_chat_input = demo_instance.chat_history[-1].get('ai_chat_input', '') or ""
+
+                # If current inputs match an existing entry (e.g., restored), prefer that entry's stored previous
+                for entry in reversed(demo_instance.chat_history):
+                    if entry.get('script_input', '') == (script_current or "") and entry.get('ai_chat_input', '') == (ai_chat_input_current or ""):
+                        prev_script_input = entry.get('prev_script_input', prev_script_input) or prev_script_input
+                        prev_ai_chat_input = entry.get('prev_ai_chat_input', prev_ai_chat_input) or prev_ai_chat_input
+                        break
+
+                # Construct user prompt with new input structure
+                if ai_chat_input_current and ai_chat_input_current.strip():
+                    # AI chat input takes precedence
+                    user_prompt = f"Current Conversation Script contents:\n{script_current}\nUser Input prompt:\n{ai_chat_input_current.strip()}"
+                elif script_current and script_current.strip():
+                    # Fall back to script input
+                    user_prompt = f"Current Conversation Script contents:\n{script_current}\nUser Input prompt:\n{script_current.strip()}"
+                else:
+                    # Default prompt
+                    user_prompt = "User Input prompt:\nGenerate an engaging conversation"
+
+                # Append previous turn block (for reference) when available
+                if (prev_script_input and prev_script_input.strip()) or (prev_ai_chat_input and prev_ai_chat_input.strip()):
+                    prev_block = "Previous turn (for reference):\n" \
+                                 f"Previous Script:\n{prev_script_input}\n\n" \
+                                 f"Previous User Input:\n{prev_ai_chat_input}\n"
+                    user_prompt = f"{user_prompt}\n\n{prev_block}"
+
+                # Remix detection: repeated input means user requests a variation of current script
+                try:
+                    same_input_as_prev = (ai_chat_input_current or "").strip() == (prev_ai_chat_input or "").strip()
+                except Exception:
+                    same_input_as_prev = False
+                if same_input_as_prev and (ai_chat_input_current or prev_ai_chat_input):
+                    user_prompt = f"{user_prompt}\n\nRemix request: The user repeated the last input; generate a varied alternative of the current script while preserving constraints and structure."
 
                 # Generate script using LLM with simplified approach
                 generated_script, title, used_prompt = demo_instance.generate_sample_script_llm(
@@ -2212,13 +2279,31 @@ Or paste text directly and it will auto-assign speakers.""",
                     speaker_names=speaker_names
                 )
 
+                # Store in chat history
+                chat_entry = {
+                    'timestamp': time.time(),
+                    'script_input': script_current,
+                    'ai_chat_input': ai_chat_input_current,
+                    'generated_script': generated_script,
+                    'title': title,
+                    'num_speakers': num_speakers_current,
+                    'speaker_names': speaker_names,
+                    # store rolling 1-back for accurate restoration later
+                    'prev_script_input': prev_script_input,
+                    'prev_ai_chat_input': prev_ai_chat_input
+                }
+                demo_instance.chat_history.append(chat_entry)
+
                 # Return script, title, and prompt for logging
-                return generated_script, title, used_prompt
+                # Clear AI chat input if clear_chat_setting is enabled
+                cleared_chat_input = "" if clear_chat_setting else ai_chat_input_current
+                return generated_script, title, used_prompt, update_chat_history(), cleared_chat_input
 
             except Exception as e:
                 error_msg = f"Failed to generate AI script: {str(e)}"
                 print(error_msg)
-                raise e  # Re-raise the exception instead of falling back
+                cleared_chat_input = "" if clear_chat_setting else ai_chat_input_current
+                return "", "", error_msg, update_chat_history(), cleared_chat_input
 
         # Model switching function
         def switch_model(selected_model):
@@ -2251,32 +2336,214 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         )
 
+        def feeling_lucky(num_speakers_current, script_current, ai_chat_input_current, speaker_1, speaker_2, speaker_3, speaker_4, 
+                         cfg_scale_val, ddpm_steps_val, do_sample_val, temperature_val, top_p_val, top_k_val, negative_prompt_val,
+                         clear_chat_setting):
+            """Generate AI script for Feeling Lucky! (Audio generation will be chained)"""
+            try:
+                # First generate the AI script
+                generated_script, title, used_prompt, updated_history, cleared_chat_input = generate_ai_script(
+                    num_speakers_current, script_current, ai_chat_input_current, 
+                    speaker_1, speaker_2, speaker_3, speaker_4, clear_chat_setting
+                )
+                
+                if not generated_script.strip():
+                    # If script generation failed, return error
+                    return generated_script, title, used_prompt, updated_history, cleared_chat_input
+                
+                # Log message for Feeling Lucky
+                log_message = f"🎲 Feeling Lucky! Generated script and starting audio generation...\n{used_prompt}"
+                
+                return generated_script, title, log_message, updated_history, cleared_chat_input
+                    
+            except Exception as e:
+                error_msg = f"🎲 Feeling Lucky failed: {str(e)}"
+                print(error_msg)
+                cleared_chat_input = "" if clear_chat_setting else ai_chat_input_current
+                return "", "", error_msg, update_chat_history(), cleared_chat_input
+
+        # Chat history management functions
+        def update_chat_history():
+            """Update the chat history selector with styled, multiline labels and preview."""
+            if not demo_instance.chat_history:
+                return gr.update(choices=[], value=None), ""
+            labels = []
+            for i, entry in enumerate(demo_instance.chat_history):
+                chat_number = i + 1
+                timestamp = time.strftime("%H:%M:%S", time.localtime(entry['timestamp']))
+                script_preview_full = entry['script_input'][:400].strip()
+                chat_preview_full = entry['ai_chat_input'][:400].strip()
+                # Multiline label with clearer formatting
+                label = (
+                    f"# {chat_number}  •  {timestamp}\n"
+                    f"Script:\n{script_preview_full}\n\n"
+                    f"AI Chat:\n{chat_preview_full}"
+                )
+                labels.append(label)
+            # Also compute a preview for the last item
+            last = demo_instance.chat_history[-1]
+            last_html = (
+                f"<div style='border:1px solid #334155;border-radius:8px;padding:10px;margin-top:6px;'>"
+                f"<div style='color:#a78bfa;'>Most recent selection preview</div>"
+                f"<div style='margin-top:6px'><strong>Script</strong><br><pre style='white-space:pre-wrap'>{last['script_input'][:1200]}</pre></div>"
+                f"<div style='margin-top:6px'><strong>AI Chat</strong><br><pre style='white-space:pre-wrap'>{last['ai_chat_input'][:1200]}</pre></div>"
+                f"</div>"
+            )
+            return gr.update(choices=labels, value=labels[-1]), last_html
+        
+        def restore_chat_by_label(label):
+            """Restore by selected label from the radio list."""
+            if not label:
+                return "", ""
+            # Extract number after '#'
+            try:
+                num_str = label.split('#',1)[1].split(' ',1)[0]
+                chat_number = int(num_str)
+            except Exception:
+                return "", ""
+            if 1 <= chat_number <= len(demo_instance.chat_history):
+                entry = demo_instance.chat_history[chat_number - 1]
+                return entry['script_input'], entry['ai_chat_input']
+            return "", ""
+        
+        def delete_chat_by_label(label):
+            """Delete a chat entry selected from radio list."""
+            if not label:
+                return update_chat_history()
+            try:
+                num_str = label.split('#',1)[1].split(' ',1)[0]
+                chat_number = int(num_str)
+            except Exception:
+                return update_chat_history()
+            if 1 <= chat_number <= len(demo_instance.chat_history):
+                demo_instance.chat_history.pop(chat_number - 1)
+            return update_chat_history()
+
+        def create_chat_history_html():
+            """Create HTML for chat history with simple button approach."""
+            if not demo_instance.chat_history:
+                return "<div style='text-align: center; color: #94a3b8;'>No chat history yet</div>"
+            
+            # Add JavaScript to handle button clicks
+            js_code = """
+            <script>
+            function handleChatAction(action, chatNumber) {
+                // Try to find elements by various methods
+                let hiddenIndex = document.getElementById('hidden_restore_index') || 
+                                 document.querySelector('[data-testid*="hidden_restore_index"]') ||
+                                 document.querySelector('input[type="number"][style*="display: none"]');
+                
+                let hiddenBtn;
+                if (action === 'restore') {
+                    hiddenBtn = document.getElementById('hidden_restore_btn') || 
+                               document.querySelector('[data-testid*="hidden_restore_btn"]') ||
+                               document.querySelector('button[style*="display: none"]');
+                } else if (action === 'delete') {
+                    hiddenBtn = document.getElementById('hidden_delete_btn') || 
+                               document.querySelector('[data-testid*="hidden_delete_btn"]') ||
+                               document.querySelector('button[style*="display: none"]');
+                }
+                
+                console.log('Looking for elements:', {hiddenIndex, hiddenBtn, action, chatNumber});
+                
+                if (hiddenIndex && hiddenBtn) {
+                    hiddenIndex.value = chatNumber;
+                    hiddenBtn.click();
+                    console.log('Successfully triggered', action, 'for chat', chatNumber);
+                } else {
+                    console.error('Could not find hidden elements for', action);
+                    // Fallback: try to trigger Gradio events directly
+                    try {
+                        // Try to find any Gradio button and trigger it
+                        const gradioButtons = document.querySelectorAll('button[data-testid]');
+                        console.log('Found Gradio buttons:', gradioButtons.length);
+                    } catch (e) {
+                        console.error('Fallback failed:', e);
+                    }
+                }
+            }
+            </script>
+            """
+            
+            history_html = js_code + "<div style='max-height: 400px; overflow-y: auto;'>"
+            for i, entry in enumerate(demo_instance.chat_history):
+                chat_number = i + 1  # 1-based numbering
+                timestamp = time.strftime("%H:%M:%S", time.localtime(entry['timestamp']))
+                script_preview = entry['script_input'][:100] + "..." if len(entry['script_input']) > 100 else entry['script_input']
+                chat_preview = entry['ai_chat_input'][:100] + "..." if len(entry['ai_chat_input']) > 100 else entry['ai_chat_input']
+                
+                # Use the JavaScript function
+                history_html += f"""
+                <div style='border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; background: rgba(15, 23, 42, 0.5);'>
+                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
+                        <strong style='color: #7c3aed;'>Chat #{chat_number} - {timestamp}</strong>
+                        <div>
+                            <button onclick='handleChatAction("restore", {chat_number})' style='background: #059669; color: white; border: none; padding: 0.25rem 0.5rem; border-radius: 4px; margin-right: 0.5rem; cursor: pointer;'>🔄 Restore</button>
+                            <button onclick='handleChatAction("delete", {chat_number})' style='background: #ef4444; color: white; border: none; padding: 0.25rem 0.5rem; border-radius: 4px; cursor: pointer;'>🗑️ Delete</button>
+                        </div>
+                    </div>
+                    <div style='margin-bottom: 0.5rem;'>
+                        <strong style='color: #e2e8f0;'>Script:</strong> <span style='color: #94a3b8;'>{script_preview}</span>
+                    </div>
+                    <div>
+                        <strong style='color: #e2e8f0;'>AI Input:</strong> <span style='color: #94a3b8;'>{chat_preview}</span>
+                    </div>
+                </div>
+                """
+            history_html += "</div>"
+            return history_html
+
+        # Connect chat history buttons
+        # Wire new chat history controls
+        restore_selected_btn.click(
+            fn=restore_chat_by_label,
+            inputs=[chat_history_selector],
+            outputs=[script_input, ai_chat_input],
+            queue=False
+        )
+        delete_selected_btn.click(
+            fn=delete_chat_by_label,
+            inputs=[chat_history_selector],
+            outputs=[chat_history_selector],
+            queue=False
+        )
+
         # Connect AI script generator button
         ai_script_btn.click(
             fn=generate_ai_script,
-            inputs=[num_speakers, script_input, speaker_selections[0], speaker_selections[1], speaker_selections[2], speaker_selections[3]],
-            outputs=[script_input, scene_title, log_output],
+            inputs=[num_speakers, script_input, ai_chat_input, speaker_selections[0], speaker_selections[1], speaker_selections[2], speaker_selections[3], clear_chat_checkbox],
+            outputs=[script_input, scene_title, log_output, chat_history_selector, ai_chat_input],
             queue=False  # Don't queue this operation
+        ).then(
+            fn=update_chat_history,
+            inputs=[],
+            outputs=[chat_history_selector, chat_history_preview],
+            queue=False
         )
-        
-        # Add usage tips
-        gr.Markdown("""
-        ### 💡 **Usage Tips**
-        
-        - **🤖 Generate AI Script**: Click to create custom conversation scripts using OpenAI GPT-4o-mini (requires OPENAI_API_KEY in .env). If script box is empty, generates a random topic conversation
-        - **🔄 Regenerate Last**: Retry the last AI script generation with the same parameters
-        - **🚀 Generate Audio**: Start audio generation from your script
-        - **Live Streaming** tab shows audio as it's generated (may have slight pauses)
-        - **Complete Audio** tab provides the full, uninterrupted audio after generation
-        - During generation, you can click **🛑 Stop Generation** to interrupt the process
-        - **AI Script Features**:
-          - Uses your current script text for topic guidance
-          - Adapts to the number of speakers you select
-          - Uses actual speaker names from your voice selections
-          - Builds upon existing conversation context
-        - **Debug Mode**: Run with `--debug` to see OpenAI prompts and responses
-        - **Setup**: Add your OpenAI API key to the `.env` file as `OPENAI_API_KEY=your_key_here`
-        """)
+
+        # Connect Feeling Lucky button - first generate AI script, then generate audio
+        feeling_lucky_btn.click(
+            fn=feeling_lucky,
+            inputs=[num_speakers, script_input, ai_chat_input, speaker_selections[0], speaker_selections[1], speaker_selections[2], speaker_selections[3],
+                   cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, clear_chat_checkbox],
+            outputs=[script_input, scene_title, log_output, chat_history_selector, ai_chat_input],
+            queue=False  # Don't queue this operation
+        ).then(
+            fn=update_chat_history,
+            inputs=[],
+            outputs=[chat_history_selector, chat_history_preview],
+            queue=False
+        ).then(
+            fn=clear_audio_outputs,
+            inputs=[],
+            outputs=[audio_output, complete_audio_output, scene_title],
+            queue=False
+        ).then(
+            fn=generate_podcast_wrapper,
+            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, normalize_voices],
+            outputs=[audio_output, complete_audio_output, scene_title, log_output, streaming_status, generate_btn, stop_btn],
+            queue=True  # Enable Gradio's built-in queue for audio generation
+        )
         
 
 

@@ -18,6 +18,16 @@
 
 ## 🚀 VibeVoice Dialogue Generation (main.py)
 
+### What's New (2025-09-21)
+
+- Dedicated AI Chat interface separate from the main script editor
+- Removed the "Regenerate Last" button (simpler, safer flow)
+- New "Feeling Lucky" button: one-click AI script + audio generation
+- Chat history with restore/delete and session persistence
+- Previous-round memory for better LLM script continuity; repeated prompts trigger a remix variation
+- More robust handling when the LLM returns fewer speakers than selected (no hard failure)
+- General UX/layout refinements for a smoother conversational scripting experience
+
 A comprehensive Gradio interface for generating high-quality multi-speaker dialogue audio using VibeVoice models. This tool provides an intuitive web interface for creating conversational audio content with advanced features and controls.
 
 ### ✨ Features
