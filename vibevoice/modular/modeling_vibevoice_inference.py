@@ -389,6 +389,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         batch_size = input_ids.shape[0]
         device = input_ids.device
         finished_tags = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        pending_finish_tags = torch.zeros(batch_size, dtype=torch.bool, device=device)  # Track samples that hit EOS but need to finish current chunk
         correct_cnt = torch.zeros(batch_size, dtype=torch.long, device=device)
         is_prefill = True
         inputs_embeds = None
@@ -516,14 +517,12 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             # reached end of generation
             if (next_tokens == generation_config.eos_token_id).any():
                 eos_indices = (next_tokens == generation_config.eos_token_id).nonzero(as_tuple=False).squeeze(1)
-                # Only print for samples that are newly finished (not already marked as finished)
-                new_eos_indices = eos_indices[~finished_tags[eos_indices]]
+                # Only process samples that are newly hitting EOS (not already marked as finished or pending)
+                new_eos_indices = eos_indices[~finished_tags[eos_indices] & ~pending_finish_tags[eos_indices]]
                 if new_eos_indices.numel() > 0:
-                    finished_tags[new_eos_indices] = True
+                    pending_finish_tags[new_eos_indices] = True
                     if verbose:
-                        print(f"Samples {new_eos_indices.tolist()} reached EOS token at step {step + 1}.", flush=True)
-                    if audio_streamer is not None:
-                        audio_streamer.end(new_eos_indices)
+                        print(f"Samples {new_eos_indices.tolist()} reached EOS token at step {step + 1}, marking for delayed finish.", flush=True)
 
             # Check if any sample reached its maximum generation length
             max_length_reached = step >= max_step_per_sample
@@ -668,19 +667,57 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
 
                 # Update embeddings for diffusion indices
                 next_inputs_embeds[diffusion_indices] = diffusion_embeds
+                
+                # Check for samples that were marked for delayed finish and have now completed their audio chunk
+                if audio_streamer is not None and pending_finish_tags.any():
+                    # Find samples that are pending finish and were in the current diffusion batch
+                    pending_in_batch = pending_finish_tags[diffusion_indices]
+                    if pending_in_batch.any():
+                        # Get the actual sample indices that are pending finish in this batch
+                        pending_indices = diffusion_indices[pending_in_batch]
+                        # Mark them as finished and end their audio streams
+                        finished_tags[pending_indices] = True
+                        pending_finish_tags[pending_indices] = False
+                        if verbose:
+                            print(f"Samples {pending_indices.tolist()} completed audio chunk after EOS, now finishing.", flush=True)
+                        audio_streamer.end(pending_indices)
             
             # Set inputs_embeds for next iteration
             inputs_embeds = next_inputs_embeds
 
         if audio_streamer is not None:
+            # Handle any remaining pending finishes (samples that hit EOS but never generated audio chunks)
+            if pending_finish_tags.any():
+                remaining_pending = torch.nonzero(pending_finish_tags, as_tuple=False).squeeze(1)
+                finished_tags[remaining_pending] = True
+                pending_finish_tags[remaining_pending] = False
+                if verbose:
+                    print(f"Samples {remaining_pending.tolist()} had pending finishes, ending their streams.", flush=True)
+                audio_streamer.end(remaining_pending)
             audio_streamer.end()
 
         # Concatenate audio chunks for each sample
         final_audio_outputs = []
+        silence_buffer_chunks = 2  # Add ~267ms of silence (2 chunks of 133.33ms each)
+        
         for sample_chunks in audio_chunks:
             if sample_chunks:
                 # Concatenate all chunks along the time dimension (assumed to be the last dimension)
                 concatenated_audio = torch.cat(sample_chunks, dim=-1)
+                
+                # Add silence buffer at the end to prevent cut-off feeling
+                if silence_buffer_chunks > 0:
+                    # Create silent chunks with the same shape as the last chunk
+                    last_chunk_shape = sample_chunks[-1].shape
+                    silent_chunks = []
+                    for _ in range(silence_buffer_chunks):
+                        silent_chunk = torch.zeros_like(sample_chunks[-1])
+                        silent_chunks.append(silent_chunk)
+                    
+                    # Concatenate silence buffer
+                    silence_buffer = torch.cat(silent_chunks, dim=-1)
+                    concatenated_audio = torch.cat([concatenated_audio, silence_buffer], dim=-1)
+                
                 final_audio_outputs.append(concatenated_audio)
             else:
                 # If no audio was generated for this sample, append None
