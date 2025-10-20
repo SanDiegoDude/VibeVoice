@@ -34,6 +34,7 @@
 - **Delayed EOS Processing**: Implemented intelligent end-of-sequence handling that allows audio chunks to complete naturally before termination
 - **Silence Buffer**: Added 267ms of silence at the end of generated audio to eliminate "cut off" feeling
 - **Improved Generation Flow**: Audio now ends at proper chunk boundaries, preserving full words and syllables
+- **Audio Gain Control**: Simple gain adjustment directly in the audio player
 - **Branch**: Changes implemented on `fix-early-eos` branch for testing and validation
 
 #### Technical Implementation Details
@@ -51,7 +52,19 @@
    - Uses `torch.zeros_like()` to create silent audio with matching chunk dimensions
    - Concatenates silence buffer to final audio before returning results
 
-**Impact**: Reduced audio truncation from ~60% to ~10%, with elimination of "cut off" feeling at audio endings.
+3. **Audio Gain Control & Trimming**:
+   - **Gain Control**: Simple gain slider (-20dB to +20dB) directly in the audio player
+   - **Real-time Adjustment**: Gain changes apply immediately with 0.1dB precision
+   - **Reset Function**: Use the reset button in the audio player to return to 0dB gain
+   - **Audio Trimming**: Built-in trimming support using Gradio's audio player controls
+   - **Smart Caching**: Gain always applies to original audio (prevents compounding artifacts)
+   - **Smooth Processing**: Soft clipping prevents clicks and pops during gain adjustments
+
+**Files Modified**: 
+- `vibevoice/modular/modeling_vibevoice_inference.py` (EOS fix + silence buffer)
+- `main.py` (audio gain control)
+
+**Impact**: Reduced audio truncation from ~60% to ~10%, with elimination of "cut off" feeling at audio endings, plus built-in audio editing capabilities.
 
 A comprehensive Gradio interface for generating high-quality multi-speaker dialogue audio using VibeVoice models. This tool provides an intuitive web interface for creating conversational audio content with advanced features and controls.
 
@@ -66,6 +79,8 @@ A comprehensive Gradio interface for generating high-quality multi-speaker dialo
 - **Load-on-Demand**: Option to load models only when needed to save VRAM
 - **Offline Mode**: Run without internet using cached Hugging Face models
 - **Streaming Audio**: Real-time audio generation with live streaming support
+- **Audio Gain Control**: Simple gain adjustment directly in the audio player
+- **Audio Trimming**: Built-in trimming support using the audio player controls
 - **Custom Voices**: Support for custom voice samples in organized subdirectories
 
 ### 🎯 Usage
@@ -104,6 +119,22 @@ python main.py --lod --hf-cache-dir "/path/to/cache"
 4. **Run the interface**: 
    - **Windows**: Double-click `run_vibevoice.bat` (easiest)
    - **Other platforms**: Execute `python main.py`
+
+### 🎵 Audio Controls
+
+VibeVoice includes built-in audio editing capabilities directly in the player:
+
+#### Gain Control
+- **Gain Slider**: Adjust audio volume from -20dB to +20dB with 0.1dB precision
+- **Real-time Updates**: Changes apply immediately without reprocessing
+- **Reset Button**: Click the reset button in the audio player to return to 0dB gain
+- **Smart Processing**: Gain always applies to the original audio, preventing artifacts
+
+#### Audio Trimming
+- **Built-in Trimmer**: Use Gradio's audio player controls to select and trim audio segments
+- **Visual Selection**: Click and drag on the waveform to select the desired portion
+- **Download Trimmed**: Download only the selected portion of the audio
+- **Gain Integration**: Gain adjustments work seamlessly with trimmed audio
 
 ### 🤖 AI Script Generation
 

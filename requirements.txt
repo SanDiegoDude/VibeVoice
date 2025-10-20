@@ -1,0 +1,28 @@
+# VibeVoice Dependencies
+# Core ML/AI libraries
+torch
+accelerate==1.6.0
+transformers==4.51.3
+diffusers
+tqdm
+numpy
+scipy
+
+# Audio processing
+librosa
+av
+aiortc
+
+# UI and visualization
+gradio
+
+# Configuration and utilities
+ml-collections
+absl-py
+python-dotenv
+
+# AI services
+openai
+
+# Note: Install with: pip install -r requirements.txt
+# Or use: pip install -e . (installs from pyproject.toml)

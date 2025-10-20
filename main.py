@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import time
-from typing import Iterator
+from typing import Iterator, Tuple, Optional
 import threading
 import numpy as np
 import gradio as gr
@@ -79,6 +79,303 @@ except Exception:
 
 logging.set_verbosity_info()
 logger = logging.get_logger(__name__)
+
+
+# Audio Trimming Functions
+def create_waveform_plot(audio_data: np.ndarray, start_time: float = 0, end_time: float = None, sample_rate: int = 24000) -> str:
+    """Create a waveform visualization with trim markers"""
+    if audio_data is None or len(audio_data) == 0:
+        return None
+        
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+        
+    # Ensure audio_data is a numpy array
+    if not isinstance(audio_data, np.ndarray):
+        audio_data = np.array(audio_data)
+        
+    duration = len(audio_data) / sample_rate
+    if end_time is None:
+        end_time = duration
+        
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(12, 4))
+    
+    # Plot the full waveform
+    time_axis = np.linspace(0, duration, len(audio_data))
+    ax.plot(time_axis, audio_data, color='#22c55e', linewidth=0.5, alpha=0.7)
+    ax.fill_between(time_axis, audio_data, alpha=0.3, color='#22c55e')
+    
+    # Add trim markers
+    ax.axvline(x=start_time, color='#ef4444', linewidth=2, linestyle='--', alpha=0.8, label=f'Start: {start_time:.2f}s')
+    ax.axvline(x=end_time, color='#ef4444', linewidth=2, linestyle='--', alpha=0.8, label=f'End: {end_time:.2f}s')
+    
+    # Highlight the selected region
+    ax.axvspan(start_time, end_time, alpha=0.2, color='#3b82f6', label='Selected Region')
+    
+    # Styling
+    ax.set_xlabel('Time (seconds)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Audio Waveform with Trim Markers')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    ax.set_xlim(0, duration)
+    
+    # Convert to base64 string for Gradio
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+    buffer.seek(0)
+    image_base64 = base64.b64encode(buffer.getvalue()).decode()
+    plt.close(fig)
+    
+    return f"data:image/png;base64,{image_base64}"
+
+
+def apply_gain_to_audio(audio_data: np.ndarray, gain_db: float, sample_rate: int = 24000) -> np.ndarray:
+    """Apply gain adjustment to audio data"""
+    if audio_data is None or len(audio_data) == 0:
+        return audio_data
+        
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+        
+    # Ensure audio_data is a numpy array
+    if not isinstance(audio_data, np.ndarray):
+        audio_data = np.array(audio_data)
+    
+    # Convert dB to linear gain
+    linear_gain = 10 ** (gain_db / 20.0)
+    
+    # Apply gain
+    gained_audio = audio_data * linear_gain
+    
+    # Prevent clipping by normalizing if needed
+    max_val = np.max(np.abs(gained_audio))
+    if max_val > 1.0:
+        gained_audio = gained_audio / max_val
+    
+    return gained_audio
+
+
+def trim_and_apply_gain(audio_data: np.ndarray, start_time: float, end_time: float, gain_db: float, sample_rate: int = 24000) -> Tuple[np.ndarray, str]:
+    """Trim audio data and apply gain adjustment"""
+    if audio_data is None or len(audio_data) == 0:
+        return None, "No audio data to trim"
+        
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+        
+    # Ensure audio_data is a numpy array
+    if not isinstance(audio_data, np.ndarray):
+        audio_data = np.array(audio_data)
+        
+    duration = len(audio_data) / sample_rate
+    
+    # Validate trim times
+    start_time = max(0, start_time)
+    end_time = min(duration, end_time)
+    
+    if start_time >= end_time:
+        return None, "Invalid trim range: start time must be less than end time"
+        
+    # Convert to sample indices
+    start_sample = int(start_time * sample_rate)
+    end_sample = int(end_time * sample_rate)
+    
+    # Trim the audio
+    trimmed_audio = audio_data[start_sample:end_sample]
+    
+    # Apply gain if not zero
+    if gain_db != 0:
+        trimmed_audio = apply_gain_to_audio(trimmed_audio, gain_db, sample_rate)
+    
+    # Create info string
+    original_duration = duration
+    trimmed_duration = len(trimmed_audio) / sample_rate
+    gain_text = f" (gain: {gain_db:+.1f}dB)" if gain_db != 0 else ""
+    info = f"Trimmed: {original_duration:.2f}s → {trimmed_duration:.2f}s (removed {original_duration - trimmed_duration:.2f}s){gain_text}"
+    
+    return trimmed_audio, info
+
+
+def create_trim_preview_audio(audio_data: np.ndarray, start_time: float, end_time: float, gain_db: float = 0, sample_rate: int = 24000) -> Tuple[np.ndarray, str]:
+    """Create preview audio for the selected trim region"""
+    if audio_data is None:
+        return None, "No audio data"
+        
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+        
+    # Ensure audio_data is a numpy array
+    if not isinstance(audio_data, np.ndarray):
+        audio_data = np.array(audio_data)
+        
+    duration = len(audio_data) / sample_rate
+    
+    # Validate trim times
+    start_time = max(0, start_time)
+    end_time = min(duration, end_time)
+    
+    if start_time >= end_time:
+        return None, "Invalid trim range"
+        
+    # Convert to sample indices
+    start_sample = int(start_time * sample_rate)
+    end_sample = int(end_time * sample_rate)
+    
+    # Extract preview audio
+    preview_audio = audio_data[start_sample:end_sample]
+    
+    # Apply gain if not zero
+    if gain_db != 0:
+        preview_audio = apply_gain_to_audio(preview_audio, gain_db, sample_rate)
+    
+    preview_duration = len(preview_audio) / sample_rate
+    gain_text = f" (gain: {gain_db:+.1f}dB)" if gain_db != 0 else ""
+    info = f"Preview: {preview_duration:.2f}s{gain_text}"
+    
+    return preview_audio, info
+
+
+def update_audio_trimmer(audio_data: np.ndarray) -> Tuple[str, float, float, float, str]:
+    """Update the audio trimmer interface when new audio is loaded"""
+    if audio_data is None:
+        return None, 0, 0, 0, "No audio loaded"
+    
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+    else:
+        sample_rate = 24000
+        
+    if len(audio_data) == 0:
+        return None, 0, 0, 0, "No audio loaded"
+    
+    duration = len(audio_data) / sample_rate
+    waveform = create_waveform_plot(audio_data, 0, duration, sample_rate)
+    return waveform, duration, 0, duration, f"Audio loaded: {duration:.2f}s duration"
+
+
+def update_waveform_with_trim(audio_data: np.ndarray, start_time: float, end_time: float) -> str:
+    """Update waveform visualization when trim markers change"""
+    if audio_data is None:
+        return None
+    
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+    else:
+        sample_rate = 24000
+    
+    waveform = create_waveform_plot(audio_data, start_time, end_time, sample_rate)
+    return waveform
+
+
+def apply_audio_trim(audio_data: np.ndarray, start_time: float, end_time: float, gain_db: float = 0) -> Tuple[np.ndarray, str]:
+    """Apply trim to audio and return trimmed audio with info"""
+    if audio_data is None:
+        return None, "No audio data to trim"
+    
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+    else:
+        sample_rate = 24000
+    
+    trimmed_audio, info = trim_and_apply_gain(audio_data, start_time, end_time, gain_db, sample_rate)
+    return trimmed_audio, info
+
+
+def reset_audio_trim(audio_data: np.ndarray) -> Tuple[str, float, float, str]:
+    """Reset trim markers to full audio"""
+    if audio_data is None:
+        return None, 0, 0, "No audio loaded"
+    
+    # Handle Gradio Audio component format (sample_rate, audio_data) tuple
+    if isinstance(audio_data, tuple) and len(audio_data) == 2:
+        sample_rate, audio_data = audio_data
+    else:
+        sample_rate = 24000
+        
+    if len(audio_data) == 0:
+        return None, 0, 0, "No audio loaded"
+    
+    duration = len(audio_data) / sample_rate
+    waveform = create_waveform_plot(audio_data, 0, duration, sample_rate)
+    return waveform, 0, duration, f"Reset to full audio: {duration:.2f}s"
+
+
+# Global variables to store original audio for gain processing
+_original_audio_cache = None
+_current_gain_db = 0.0
+_last_cached_audio_hash = None
+
+def cache_original_audio(audio_data: np.ndarray) -> None:
+    """Cache the current audio data for gain processing (updates when audio is trimmed)"""
+    global _original_audio_cache, _current_gain_db, _last_cached_audio_hash
+    if audio_data is not None:
+        if isinstance(audio_data, tuple) and len(audio_data) == 2:
+            sample_rate, audio_data = audio_data
+            
+            # Create a hash of the audio to detect if it's different from what we cached
+            audio_hash = hash(audio_data.tobytes())
+            
+            # Only update cache if this is different audio (not just gain-adjusted version)
+            if audio_hash != _last_cached_audio_hash:
+                # Convert to float32 but preserve original levels (don't normalize)
+                if audio_data.dtype != np.float32:
+                    # Convert int16 to float32 and normalize to [-1, 1] range
+                    if audio_data.dtype == np.int16:
+                        audio_data = audio_data.astype(np.float32) / 32767.0
+                    else:
+                        audio_data = audio_data.astype(np.float32)
+                _original_audio_cache = (sample_rate, audio_data)
+                _current_gain_db = 0.0  # Reset gain when audio changes (including trimming)
+                _last_cached_audio_hash = audio_hash
+        else:
+            _original_audio_cache = None
+
+def apply_gain_to_complete_audio(audio_data: np.ndarray, gain_db: float) -> Tuple[np.ndarray, str]:
+    """Apply gain to the original cached audio (prevents compounding gain issues)"""
+    global _original_audio_cache, _current_gain_db
+    
+    if _original_audio_cache is None:
+        return None, "No original audio cached"
+    
+    sample_rate, original_audio = _original_audio_cache
+    
+    # Apply gain to the original audio (not the current audio)
+    gain_linear = 10 ** (gain_db / 20.0)
+    adjusted_audio = original_audio * gain_linear
+    
+    # Debug info
+    original_max = np.max(np.abs(original_audio))
+    adjusted_max = np.max(np.abs(adjusted_audio))
+    
+    # Convert back to int16 for Gradio compatibility
+    # The original audio should already be in [-1, 1] range from caching
+    # Apply soft clipping to prevent harsh artifacts
+    adjusted_audio = np.tanh(adjusted_audio)  # Soft clipping to prevent harsh artifacts
+    
+    # Convert to int16 with proper scaling
+    adjusted_audio = (adjusted_audio * 32767).astype(np.int16)
+    
+    # Update current gain
+    _current_gain_db = gain_db
+    
+    gain_text = f" (Gain: {gain_db:+.1f}dB)" if gain_db != 0 else ""
+    info = f"Audio with gain applied{gain_text} | Original max: {original_max:.3f} → Adjusted max: {adjusted_max:.3f}"
+    
+    return (sample_rate, adjusted_audio), info
+
+
+def reset_gain_control() -> float:
+    """Reset gain control to 0"""
+    return 0.0
 
 
 class VibeVoiceDemo:
@@ -2034,6 +2331,25 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_id="complete-audio-output"
                 )
                 
+                # Simple gain control for the audio player
+                with gr.Row():
+                    gain_control = gr.Slider(
+                        minimum=-20.0,
+                        maximum=20.0,
+                        value=0.0,
+                        step=0.1,
+                        label="Gain (dB)",
+                        elem_id="gain-control",
+                        interactive=True
+                    )
+                    
+                    gain_reset_btn = gr.Button(
+                        value="Reset",
+                        variant="secondary",
+                        size="sm",
+                        elem_id="gain-reset-btn"
+                    )
+                
                 gr.Markdown("""
                 *💡 **Streaming**: Audio plays as it's being generated (may have slight pauses)  
                 *💡 **Complete Audio**: Will appear below after generation finishes*
@@ -2152,6 +2468,9 @@ Or paste text directly and it will auto-assign speakers.""",
                             audio_label = f"Complete Audio: {title} (Download after generation)"
                         
                         yield None, gr.update(value=complete_audio, visible=True, label=audio_label), gr.update(value=title_html, visible=True), log, gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+                        
+                        # Cache the original audio for gain processing
+                        cache_original_audio(complete_audio)
                     else:
                         # Streaming state: update streaming audio only
                         if streaming_audio is not None:
@@ -2545,6 +2864,26 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=True  # Enable Gradio's built-in queue for audio generation
         )
         
+        # Gain Control Event Handlers
+        # Cache audio when complete audio changes (detects trimming)
+        complete_audio_output.change(
+            fn=cache_original_audio,
+            inputs=[complete_audio_output],
+            outputs=[]
+        )
+        
+        # Apply gain when gain slider changes (uses cached original audio)
+        gain_control.change(
+            fn=lambda gain_db: apply_gain_to_complete_audio(None, gain_db),
+            inputs=[gain_control],
+            outputs=[complete_audio_output, log_output]
+        )
+        
+        # Reset gain button
+        gain_reset_btn.click(
+            fn=reset_gain_control,
+            outputs=[gain_control]
+        )
 
 
     return interface
