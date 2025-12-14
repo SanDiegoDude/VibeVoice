@@ -8,6 +8,9 @@ import os
 import time
 from typing import Iterator, Tuple, Optional
 import threading
+import multiprocessing
+import queue
+import signal
 import numpy as np
 import gradio as gr
 import librosa
@@ -378,6 +381,197 @@ def reset_gain_control() -> float:
     return 0.0
 
 
+# ============================================================================
+# Multiprocessing Model Worker (for true VRAM cleanup in LOD mode)
+# ============================================================================
+
+def model_worker_process(request_queue, response_queue, model_path, device, inference_steps, 
+                         hf_offline, hf_cache_dir, attn_implementation):
+    """
+    Worker process that loads and runs the model.
+    When this process is killed, the OS forcibly reclaims ALL GPU memory.
+    """
+    import sys
+    import os
+    
+    # Debug: Print Python executable and path
+    print(f"[Worker] Python executable: {sys.executable}")
+    print(f"[Worker] Python path (first 3): {sys.path[:3]}")
+    
+    # Ensure the worker can find the vibevoice package
+    # The package might be installed in the parent directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(script_dir)
+    
+    # Add both script dir and parent dir to path
+    for path in [script_dir, parent_dir]:
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    
+    print(f"[Worker] Added to sys.path: {script_dir}")
+    print(f"[Worker] Working directory: {os.getcwd()}")
+    
+    try:
+        # Import necessary packages in worker
+        import torch
+        import numpy as np
+        import traceback
+        import queue
+        
+        print(f"[Worker] Successfully imported torch and numpy")
+        
+        # Import vibevoice modules - use correct paths
+        print(f"[Worker] Attempting to import vibevoice modules...")
+        from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+        print(f"[Worker] ✓ Imported VibeVoiceProcessor")
+        from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
+        print(f"[Worker] ✓ Imported VibeVoiceForConditionalGenerationInference")
+        from vibevoice.modular.configuration_vibevoice import VibeVoiceConfig
+        print(f"[Worker] ✓ Imported VibeVoiceConfig")
+        
+        print(f"[Worker] Loading model {model_path} in child process (PID: {os.getpid()})")
+        
+        # Load processor
+        processor = VibeVoiceProcessor.from_pretrained(
+            model_path,
+            local_files_only=bool(hf_offline),
+            cache_dir=hf_cache_dir,
+        )
+        
+        # Load model
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map=device,
+            attn_implementation=attn_implementation,
+            cache_dir=hf_cache_dir,
+        )
+        model.eval()
+        
+        # Setup scheduler
+        model.model.noise_scheduler = model.model.noise_scheduler.from_config(
+            model.model.noise_scheduler.config,
+            algorithm_type='sde-dpmsolver++',
+            beta_schedule='squaredcos_cap_v2'
+        )
+        model.set_ddpm_inference_steps(num_steps=inference_steps)
+        
+        print(f"[Worker] Model loaded successfully in child process")
+        
+        # Signal ready
+        response_queue.put(("ready", None))
+        
+        # Process requests
+        while True:
+            try:
+                request = request_queue.get(timeout=1.0)
+                
+                if request[0] == "shutdown":
+                    print("[Worker] Shutdown requested")
+                    break
+                    
+                elif request[0] == "generate":
+                    # Unpack generation request
+                    (_, text, voice_samples, cfg_scale, ddpm_steps, do_sample, 
+                     temperature, top_p, top_k, negative_prompt) = request
+                    
+                    # Import AudioStreamer in worker
+                    from vibevoice.modular.streamer import AudioStreamer
+                    
+                    # Set DDPM steps
+                    if ddpm_steps is not None:
+                        model.set_ddpm_inference_steps(num_steps=int(ddpm_steps))
+                    
+                    # Process inputs
+                    inputs = processor(
+                        text=[text],
+                        voice_samples=[voice_samples],
+                        padding=True,
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                    )
+                    
+                    # Prepare negative prompt
+                    negative_ids = None
+                    if negative_prompt and hasattr(processor, 'tokenizer'):
+                        try:
+                            negative_ids = processor.tokenizer(negative_prompt, return_tensors="pt").input_ids.to(model.device)
+                        except Exception:
+                            pass
+                    
+                    # Create audio streamer to catch EOS properly
+                    audio_streamer = AudioStreamer(
+                        batch_size=1,
+                        stop_signal=None,
+                        timeout=None
+                    )
+                    
+                    print("[Worker] Starting generation with audio streamer...")
+                    
+                    # Generate with streaming (to catch EOS)
+                    with torch.no_grad():
+                        outputs = model.generate(
+                            **inputs,
+                            max_new_tokens=None,
+                            cfg_scale=cfg_scale,
+                            tokenizer=processor.tokenizer,
+                            generation_config={
+                                'do_sample': bool(do_sample),
+                                'temperature': float(temperature),
+                                'top_p': float(top_p),
+                                'top_k': int(top_k),
+                            },
+                            negative_prompt_ids=negative_ids,
+                            audio_streamer=audio_streamer,  # Use streamer to catch EOS
+                            verbose=False,
+                            refresh_negative=True,
+                        )
+                    
+                    # Collect all audio chunks from the streamer
+                    print("[Worker] Collecting audio chunks from streamer...")
+                    audio_stream = audio_streamer.get_stream(0)
+                    audio_chunks = []
+                    
+                    for audio_chunk in audio_stream:
+                        # Convert to numpy
+                        if torch.is_tensor(audio_chunk):
+                            if audio_chunk.dtype == torch.bfloat16:
+                                audio_chunk = audio_chunk.float()
+                            audio_np = audio_chunk.cpu().numpy().astype(np.float32)
+                        else:
+                            audio_np = np.array(audio_chunk, dtype=np.float32)
+                        
+                        # Ensure 1D
+                        if len(audio_np.shape) > 1:
+                            audio_np = audio_np.squeeze()
+                        
+                        audio_chunks.append(audio_np)
+                    
+                    # Concatenate all chunks
+                    if audio_chunks:
+                        audio_values = np.concatenate(audio_chunks)
+                        print(f"[Worker] Generated {len(audio_chunks)} chunks, total duration: {len(audio_values)/24000:.2f}s")
+                    else:
+                        audio_values = np.array([], dtype=np.float32)
+                        print("[Worker] Warning: No audio chunks generated")
+                    
+                    # Send result back
+                    response_queue.put(("success", audio_values))
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[Worker] Error during generation: {e}")
+                traceback.print_exc()
+                response_queue.put(("error", str(e)))
+                break
+                
+    except Exception as e:
+        print(f"[Worker] Fatal error loading model: {e}")
+        traceback.print_exc()
+        response_queue.put(("error", str(e)))
+
+
 class VibeVoiceDemo:
     def __init__(self, model_path: str, device: str = None, inference_steps: int = 5, debug: bool = False, load_on_demand: bool = False,
                  script_ai_url: str | None = None, script_ai_model: str | None = None, script_ai_api_key: str | None = None,
@@ -413,6 +607,12 @@ class VibeVoiceDemo:
         self.model_loaded = False  # Track if model is loaded
         self.processor = None  # Will be loaded when needed
         self.model = None  # Will be loaded when needed
+        
+        # Multiprocessing for LOD mode (true VRAM cleanup)
+        self.worker_process = None
+        self.request_queue = None
+        self.response_queue = None
+        self.use_multiprocessing_lod = load_on_demand  # Use MP worker only in LOD mode
 
         # Available models
         self.available_models = {
@@ -446,26 +646,167 @@ class VibeVoiceDemo:
     def ensure_model_loaded(self):
         """Ensure model is loaded, load it if not already loaded."""
         if not self.model_loaded:
-            self.load_model()
+            if self.use_multiprocessing_lod:
+                self._spawn_worker_process()
+            else:
+                self.load_model()
             # Voice presets are already set up in __init__, no need to call again
+    
+    def _spawn_worker_process(self):
+        """Spawn a worker process to load the model (LOD mode only)."""
+        if self.model_loaded:
+            return
+            
+        print(f"🔄 Spawning worker process for model {self.model_path}")
+        
+        # Create IPC queues
+        self.request_queue = multiprocessing.Queue()
+        self.response_queue = multiprocessing.Queue()
+        
+        # Get settings
+        hf_offline_env = os.getenv('HF_HUB_OFFLINE')
+        offline_mode = self.hf_offline if self.hf_offline is not None else (hf_offline_env == '1' or (hf_offline_env or '').lower() in ['true', 'yes'])
+        cache_dir = self.hf_cache_dir or os.getenv('HF_HOME') or os.getenv('TRANSFORMERS_CACHE') or None
+        attn_implementation = get_attention_implementation(self.device)
+        
+        # Resolve mapped path
+        mapped_path = self.available_models.get(self.model_path, self.model_path)
+        model_path_to_use = mapped_path
+        
+        # Spawn worker process
+        self.worker_process = multiprocessing.Process(
+            target=model_worker_process,
+            args=(self.request_queue, self.response_queue, model_path_to_use, 
+                  self.device, self.inference_steps, offline_mode, cache_dir, attn_implementation)
+        )
+        self.worker_process.start()
+        
+        # Wait for worker to be ready
+        print("⏳ Waiting for worker to load model...")
+        try:
+            status, data = self.response_queue.get(timeout=180)  # 3 minute timeout
+            if status == "ready":
+                print(f"✅ Worker process ready (PID: {self.worker_process.pid})")
+                self.model_loaded = True
+            elif status == "error":
+                raise Exception(f"Worker failed to load model: {data}")
+        except queue.Empty:
+            raise Exception("Worker process timed out during model loading")
 
     def unload_model(self):
         """Unload the model to free VRAM."""
+        # In LOD multiprocessing mode, kill the worker process
+        if self.use_multiprocessing_lod and self.worker_process is not None:
+            print(f"🔄 Terminating worker process (PID: {self.worker_process.pid}) to free VRAM")
+            
+            # Try graceful shutdown first
+            try:
+                self.request_queue.put(("shutdown", None), timeout=1.0)
+                self.worker_process.join(timeout=5.0)
+            except:
+                pass
+            
+            # Force kill if still alive
+            if self.worker_process.is_alive():
+                print("⚠️ Force terminating worker process...")
+                self.worker_process.terminate()
+                self.worker_process.join(timeout=5.0)
+                
+                # Last resort: kill -9
+                if self.worker_process.is_alive():
+                    self.worker_process.kill()
+                    self.worker_process.join()
+            
+            # Clean up
+            self.worker_process = None
+            if self.request_queue:
+                self.request_queue.close()
+                self.request_queue = None
+            if self.response_queue:
+                self.response_queue.close()
+                self.response_queue = None
+            
+            self.model_loaded = False
+            
+            # Small delay to let OS reclaim GPU memory
+            time.sleep(0.5)
+            
+            # Report VRAM after process kill
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / 1024**3
+                reserved = torch.cuda.memory_reserved() / 1024**3
+                print(f"✅ Worker terminated - VRAM: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            else:
+                print(f"✅ Worker terminated and memory freed")
+            
+            return
+        
+        # Standard unloading for non-LOD mode
         if self.model_loaded and self.model is not None:
             print(f"Unloading model from {self.model_path} to free VRAM")
-            # Clear model and processor from memory
+            
+            # Move model to CPU first to release GPU memory
+            if hasattr(self, 'model') and self.model is not None:
+                try:
+                    # Clear KV cache if model has it
+                    if hasattr(self.model, 'model'):
+                        if hasattr(self.model.model, 'language_model'):
+                            # Clear language model cache
+                            if hasattr(self.model.model.language_model, 'clear_cache'):
+                                self.model.model.language_model.clear_cache()
+                    
+                    # Move all model components to CPU
+                    self.model.to('cpu')
+                    
+                    # Clear the model's internal cache if it has one
+                    if hasattr(self.model, 'clear_cache'):
+                        self.model.clear_cache()
+                        
+                    # Explicitly set to eval and no_grad mode before deletion
+                    self.model.eval()
+                    
+                except Exception as e:
+                    print(f"Warning: Error moving model to CPU: {e}")
+            
+            # Clear current streamer first
+            if hasattr(self, 'current_streamer') and self.current_streamer is not None:
+                try:
+                    self.current_streamer.end()
+                except:
+                    pass
+                self.current_streamer = None
+            
+            # Delete model and processor references
             if hasattr(self, 'model'):
                 del self.model
             if hasattr(self, 'processor'):
                 del self.processor
+                
             self.model = None
             self.processor = None
             self.model_loaded = False
-            # Force garbage collection
+            
+            # Aggressive garbage collection
             import gc
-            gc.collect()
+            for _ in range(3):  # Multiple passes for circular references
+                gc.collect()
+            
+            # Clear CUDA cache aggressively
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Wait for all CUDA operations to complete
+                torch.cuda.ipc_collect()  # Collect IPC memory
+                torch.cuda.empty_cache()  # Clear again after sync
+                
+                # Report VRAM usage after cleanup
+                allocated = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+                reserved = torch.cuda.memory_reserved() / 1024**3  # Convert to GB
+                print(f"✅ Model unloaded - VRAM: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                
+                # Reset peak memory stats
+                torch.cuda.reset_peak_memory_stats()
+            else:
+                print(f"✅ Model unloaded and memory cleared")
 
     def switch_model(self, new_model_path: str):
         """Switch to a different model, unloading the current one if loaded."""
@@ -874,19 +1215,33 @@ class VibeVoiceDemo:
                     raise gr.Error(f"Error: Please select a valid speaker for Speaker {i+1}.")
             
             # Build initial log
-            if diffusion_steps is not None and diffusion_steps != self.inference_steps:
-                self.model.set_ddpm_inference_steps(num_steps=int(diffusion_steps))
+            # Only set DDPM steps if not using multiprocessing (worker handles it)
+            if not self.use_multiprocessing_lod:
+                if diffusion_steps is not None and diffusion_steps != self.inference_steps:
+                    self.model.set_ddpm_inference_steps(num_steps=int(diffusion_steps))
+                else:
+                    self.model.set_ddpm_inference_steps(num_steps=self.inference_steps)
+            
+            # Get effective diffusion steps for logging
+            if self.use_multiprocessing_lod:
+                effective_steps = diffusion_steps if diffusion_steps is not None else self.inference_steps
             else:
-                self.model.set_ddpm_inference_steps(num_steps=self.inference_steps)
+                effective_steps = self.model.ddpm_inference_steps
 
             log = f"🎙️ Generating audio with {num_speakers} speakers\n"
-            log += f"📊 Parameters: CFG Scale={cfg_scale}, Diffusion Steps={self.model.ddpm_inference_steps}, Sampling={do_sample}, Temp={temperature}, TopP={top_p}, TopK={top_k}\n"
+            log += f"📊 Parameters: CFG Scale={cfg_scale}, Diffusion Steps={effective_steps}, Sampling={do_sample}, Temp={temperature}, TopP={top_p}, TopK={top_k}\n"
             log += f"🎭 Speakers: {', '.join(selected_speakers)}\n"
             
             # Check for stop signal
             if self.stop_generation:
                 self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
+                
+                # Unload model if in LOD mode
+                if self.load_on_demand and self.model_loaded:
+                    self.unload_model()
+                    print("🔄 Model unloaded to free VRAM after stopping generation")
+                
+                yield None, None, "🛑 Generation stopped by user", gr.update(visible=False)
                 return
             
             # Load voice samples
@@ -909,7 +1264,13 @@ class VibeVoiceDemo:
             # Check for stop signal
             if self.stop_generation:
                 self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
+                
+                # Unload model if in LOD mode
+                if self.load_on_demand and self.model_loaded:
+                    self.unload_model()
+                    print("🔄 Model unloaded to free VRAM after stopping generation")
+                
+                yield None, None, "🛑 Generation stopped by user", gr.update(visible=False)
                 return
             
             # Parse script to assign speaker ID's
@@ -936,11 +1297,82 @@ class VibeVoiceDemo:
             # Check for stop signal before processing
             if self.stop_generation:
                 self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
+                
+                # Unload model if in LOD mode
+                if self.load_on_demand and self.model_loaded:
+                    self.unload_model()
+                    print("🔄 Model unloaded to free VRAM after stopping generation")
+                
+                yield None, None, "🛑 Generation stopped by user", gr.update(visible=False)
                 return
             
             start_time = time.time()
             
+            # ===== MULTIPROCESSING MODE (LOD with true VRAM cleanup) =====
+            if self.use_multiprocessing_lod and self.worker_process:
+                log += "🔄 Generating audio with worker process (no streaming, full VRAM cleanup)...\n"
+                yield None, None, log, gr.update(visible=True)
+                
+                try:
+                    # Generate using worker process
+                    audio_values = self._generate_with_worker(
+                        formatted_script, voice_samples, cfg_scale, diffusion_steps,
+                        do_sample, temperature, top_p, top_k, negative_prompt
+                    )
+                    
+                    generation_time = time.time() - start_time
+                    
+                    # Ensure audio is 1D and properly normalized
+                    if len(audio_values.shape) > 1:
+                        audio_values = audio_values.squeeze()
+                    
+                    # Handle any NaN or infinity values
+                    audio_values = np.nan_to_num(audio_values, nan=0.0, posinf=1.0, neginf=-1.0)
+                    
+                    # Convert to 16-bit for Gradio
+                    audio_16bit = convert_to_16_bit_wav(audio_values)
+                    
+                    # Ensure it's actually int16 and contiguous in memory
+                    if audio_16bit.dtype != np.int16:
+                        audio_16bit = audio_16bit.astype(np.int16)
+                    if not audio_16bit.flags['C_CONTIGUOUS']:
+                        audio_16bit = np.ascontiguousarray(audio_16bit)
+                    
+                    sample_rate = 24000
+                    audio_duration = len(audio_16bit) / sample_rate
+                    
+                    print(f"[Main] Audio shape: {audio_16bit.shape}, dtype: {audio_16bit.dtype}, duration: {audio_duration:.2f}s")
+                    
+                    final_log = log + f"⏱️ Generation completed in {generation_time:.2f} seconds\n"
+                    final_log += f"🎵 Audio duration: {audio_duration:.2f} seconds\n"
+                    final_log += "✨ Generation successful!\n"
+                    final_log += "💡 Not satisfied? You can regenerate or adjust the CFG scale for different results."
+                    
+                    self.is_generating = False
+                    
+                    # Yield complete audio
+                    yield None, (sample_rate, audio_16bit), final_log, gr.update(visible=False)
+                    
+                    # Unload (kill worker) to free VRAM
+                    if self.load_on_demand and self.model_loaded:
+                        self.unload_model()
+                    
+                    return
+                    
+                except Exception as e:
+                    self.is_generating = False
+                    error_msg = log + f"\n❌ Worker process error: {str(e)}"
+                    print(error_msg)
+                    traceback.print_exc()
+                    
+                    # Unload (kill worker) on error
+                    if self.load_on_demand and self.model_loaded:
+                        self.unload_model()
+                    
+                    yield None, None, error_msg, gr.update(visible=False)
+                    return
+            
+            # ===== STANDARD MODE (with streaming) =====
             inputs = self.processor(
                 text=[formatted_script],
                 voice_samples=[voice_samples],
@@ -974,7 +1406,13 @@ class VibeVoiceDemo:
                 audio_streamer.end()
                 generation_thread.join(timeout=5.0)  # Wait up to 5 seconds for thread to finish
                 self.is_generating = False
-                yield None, "🛑 Generation stopped by user", gr.update(visible=False)
+                
+                # Unload model if in LOD mode
+                if self.load_on_demand and self.model_loaded:
+                    self.unload_model()
+                    print("🔄 Model unloaded to free VRAM after stopping generation")
+                
+                yield None, None, "🛑 Generation stopped by user", gr.update(visible=False)
                 return
 
             # Collect audio chunks as they arrive
@@ -1107,11 +1545,23 @@ class VibeVoiceDemo:
             
             if not has_received_chunks:
                 error_log = log + f"\n❌ Error: No audio chunks were received from the model. Generation time: {generation_time:.2f}s"
+                
+                # Unload model if in LOD mode
+                if self.load_on_demand and self.model_loaded:
+                    self.unload_model()
+                    print("🔄 Model unloaded to free VRAM after error")
+                
                 yield None, None, error_log, gr.update(visible=False)
                 return
             
             if not has_yielded_audio:
                 error_log = log + f"\n❌ Error: Audio was generated but not streamed. Chunk count: {chunk_count}"
+                
+                # Unload model if in LOD mode
+                if self.load_on_demand and self.model_loaded:
+                    self.unload_model()
+                    print("🔄 Model unloaded to free VRAM after error")
+                
                 yield None, None, error_log, gr.update(visible=False)
                 return
 
@@ -1135,6 +1585,12 @@ class VibeVoiceDemo:
                     print("🔄 Model unloaded to free VRAM after generation")
             else:
                 final_log = log + "❌ No audio was generated."
+                
+                # Unload model if in LOD mode
+                if self.load_on_demand and self.model_loaded:
+                    self.unload_model()
+                    print("🔄 Model unloaded to free VRAM after failed generation")
+                
                 yield None, None, final_log, gr.update(visible=False)
 
         except gr.Error as e:
@@ -1143,6 +1599,12 @@ class VibeVoiceDemo:
             self.current_streamer = None
             error_msg = f"❌ Input Error: {str(e)}"
             print(error_msg)
+            
+            # Unload model if in LOD mode
+            if self.load_on_demand and self.model_loaded:
+                self.unload_model()
+                print("🔄 Model unloaded to free VRAM after error")
+            
             yield None, None, error_msg, gr.update(visible=False)
             
         except Exception as e:
@@ -1150,8 +1612,13 @@ class VibeVoiceDemo:
             self.current_streamer = None
             error_msg = f"❌ An unexpected error occurred: {str(e)}"
             print(error_msg)
-            import traceback
             traceback.print_exc()
+            
+            # Unload model if in LOD mode
+            if self.load_on_demand and self.model_loaded:
+                self.unload_model()
+                print("🔄 Model unloaded to free VRAM after error")
+            
             yield None, None, error_msg, gr.update(visible=False)
     
     def _generate_with_streamer(self, inputs, cfg_scale, audio_streamer, do_sample=True, temperature=0.95, top_p=0.95, top_k=0, negative_prompt: str = ""):
@@ -1198,15 +1665,58 @@ class VibeVoiceDemo:
             # Make sure to end the stream on error
             audio_streamer.end()
     
+    def _generate_with_worker(self, formatted_script, voice_samples, cfg_scale, ddpm_steps,
+                              do_sample, temperature, top_p, top_k, negative_prompt):
+        """
+        Generate audio using the worker process (LOD multiprocessing mode).
+        Returns complete audio (no streaming in this mode).
+        """
+        if not self.worker_process or not self.model_loaded:
+            raise Exception("Worker process not available")
+        
+        print("[Main] Sending generation request to worker...")
+        
+        # Send request to worker
+        request = ("generate", formatted_script, voice_samples, cfg_scale, ddpm_steps,
+                   do_sample, temperature, top_p, top_k, negative_prompt)
+        self.request_queue.put(request)
+        
+        # Wait for response (with timeout)
+        try:
+            status, data = self.response_queue.get(timeout=600)  # 10 minute timeout
+            
+            if status == "success":
+                print("[Main] Received audio from worker")
+                return data  # numpy array of audio
+            elif status == "error":
+                raise Exception(f"Worker error: {data}")
+            else:
+                raise Exception(f"Unknown worker response: {status}")
+                
+        except queue.Empty:
+            raise Exception("Worker timeout - generation took too long")
+    
     def stop_audio_generation(self):
         """Stop the current audio generation process."""
         self.stop_generation = True
-        if self.current_streamer is not None:
-            try:
-                self.current_streamer.end()
-            except Exception as e:
-                print(f"Error stopping streamer: {e}")
-        print("🛑 Audio generation stop requested")
+        
+        # In multiprocessing mode, we can't really stop mid-generation
+        # but we can kill the worker after
+        if self.use_multiprocessing_lod:
+            print("🛑 Stop requested - worker will be terminated after current generation")
+        else:
+            # Standard mode: stop the streamer
+            if self.current_streamer is not None:
+                try:
+                    self.current_streamer.end()
+                except Exception as e:
+                    print(f"Error stopping streamer: {e}")
+            print("🛑 Audio generation stop requested")
+        
+        # Unload model if in LOD mode (kills worker process or unloads model)
+        if self.load_on_demand and self.model_loaded:
+            self.unload_model()
+            print("🔄 Model unloaded to free VRAM after stopping generation")
     
     def store_last_prompt_data(self, prompt_data):
         """Store the last prompt data for regeneration."""
@@ -2486,8 +2996,13 @@ Or paste text directly and it will auto-assign speakers.""",
             except Exception as e:
                 error_msg = f"❌ A critical error occurred in the wrapper: {str(e)}"
                 print(error_msg)
-                import traceback
                 traceback.print_exc()
+                
+                # Unload model if in LOD mode
+                if demo_instance.load_on_demand and demo_instance.model_loaded:
+                    demo_instance.unload_model()
+                    print("🔄 Model unloaded to free VRAM after wrapper error")
+                
                 # Reset button states on error
                 yield None, gr.update(value=None, visible=False), gr.update(value="", visible=False), error_msg, gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
         
@@ -3065,4 +3580,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Set multiprocessing start method for CUDA compatibility
+    # 'spawn' is required for CUDA to work correctly in child processes
+    try:
+        multiprocessing.set_start_method('spawn')
+    except RuntimeError:
+        # Already set, ignore
+        pass
+    
     main()

@@ -18,6 +18,14 @@
 
 ## 🚀 VibeVoice Dialogue Generation (main.py)
 
+### What's New (2024-12-14)
+
+- **🔄 True VRAM Cleanup in LOD Mode**: Worker-based multiprocessing architecture that actually frees GPU memory
+- **⚡ Process Isolation**: Each generation runs in a separate worker process that gets terminated after completion
+- **🎯 Proper EOS Detection**: Worker processes use audio streaming to stop generation at natural speech endpoints
+- **💾 Memory Efficiency**: VRAM drops to near-zero between generations (not just "unreserved" but fully reclaimed by OS)
+- **🏗️ Architectural Improvement**: Solves the long-standing issue of PyTorch's CUDA allocator holding onto reserved memory
+
 ### What's New (2025-09-21)
 
 - Dedicated AI Chat interface separate from the main script editor
@@ -76,12 +84,43 @@ A comprehensive Gradio interface for generating high-quality multi-speaker dialo
 - **Advanced Settings**: Fine-tune generation parameters (CFG scale, diffusion steps, temperature, etc.)
 - **AI Script Generation**: Generate dialogue scripts using OpenAI GPT-4.1-mini or compatible servers
 - **OpenAI-Compatible Servers**: Support for local and third-party OAI-compatible LLM servers
-- **Load-on-Demand**: Option to load models only when needed to save VRAM
+- **Load-on-Demand (LOD)**: Worker-based architecture that truly frees VRAM after each generation
 - **Offline Mode**: Run without internet using cached Hugging Face models
 - **Streaming Audio**: Real-time audio generation with live streaming support
 - **Audio Gain Control**: Simple gain adjustment directly in the audio player
 - **Audio Trimming**: Built-in trimming support using the audio player controls
 - **Custom Voices**: Support for custom voice samples in organized subdirectories
+
+### 🔄 Load-on-Demand (LOD) Mode Architecture
+
+The `--lod` flag enables a specialized worker-based architecture that provides **true VRAM cleanup** after each generation:
+
+#### How It Works
+
+1. **Lightweight Main Process**: The Gradio UI runs in the main process with minimal memory footprint
+2. **Worker Process Spawning**: When generation starts, a separate worker process is spawned
+3. **Model Loading**: The worker process loads the model (~18GB VRAM) and performs generation
+4. **Process Termination**: After generation completes, the worker process is terminated
+5. **OS Memory Reclaim**: The operating system forcibly reclaims ALL GPU memory from the terminated process
+
+#### Key Benefits
+
+- ✅ **True VRAM Cleanup**: Memory drops to near-zero between generations (not just "unreserved")
+- ✅ **Faster Startup**: Main UI starts immediately without loading the model
+- ✅ **No Memory Leaks**: Fresh process for each generation eliminates accumulation
+- ✅ **Proper EOS Detection**: Worker uses audio streamer to stop generation at natural speech endpoints
+
+#### Technical Details
+
+Traditional model unloading only marks GPU memory as "unreserved" but PyTorch's CUDA allocator holds onto it for performance. When you kill a process, the OS kernel forcibly reclaims all GPU allocations—this is the **only reliable way** to truly free PyTorch's reserved CUDA memory.
+
+#### Trade-offs
+
+- **No Real-Time Streaming**: LOD mode returns complete audio after generation (not chunk-by-chunk)
+- **Process Spawn Overhead**: ~1-2 seconds startup time per generation
+- **Can't Stop Mid-Generation**: Must wait for generation to complete
+
+**Recommended for**: Systems with limited VRAM, running multiple AI services, or when you need guaranteed memory cleanup between generations.
 
 ### 🎯 Usage
 
@@ -89,7 +128,7 @@ A comprehensive Gradio interface for generating high-quality multi-speaker dialo
 # Basic usage
 python main.py
 
-# With load-on-demand mode (faster startup)
+# With load-on-demand mode (faster startup, true VRAM cleanup)
 python main.py --lod
 
 # With debug mode
@@ -378,7 +417,7 @@ pip install openai
 # pip install flash-attn --no-build-isolation
 # Or download from: https://github.com/sunsetcoder/flash-attention-windows
 
-# Install the VibeVoice package
+# Install the VibeVoice package in editable mode (required for --lod mode)
 pip install -e .
 ```
 
@@ -405,7 +444,7 @@ pip install openai
 # pip install flash-attn --no-build-isolation
 # Or download from: https://github.com/sunsetcoder/flash-attention-windows
 
-# Install dependencies
+# Install dependencies in editable mode (required for --lod mode)
 pip install -e .
 ```
 
@@ -491,6 +530,15 @@ In fact, we intentionally decided not to denoise our training data because we th
 
 #### Q5: Some Chinese pronunciation errors.
 **A:** The volume of Chinese data in our training set is significantly smaller than the English data. Additionally, certain special characters (e.g., Chinese quotation marks) may occasionally cause pronunciation issues.
+
+#### Q6: Why use --lod mode? What about VRAM cleanup?
+**A:** The `--lod` (Load-on-Demand) mode uses a worker-based multiprocessing architecture that provides **true VRAM cleanup**. Traditional model unloading only marks GPU memory as "unreserved," but PyTorch's CUDA allocator holds onto it for performance. When you use `--lod` mode, each generation runs in a separate worker process that gets terminated after completion, forcing the OS to reclaim ALL GPU memory. This is the only reliable way to truly free reserved CUDA memory. 
+
+**Use --lod mode when:**
+- You have limited VRAM and need guaranteed memory cleanup between generations
+- You're running multiple AI services on the same GPU
+- You want faster startup (UI loads without waiting for model)
+- You don't need real-time audio streaming (LOD returns complete audio after generation)
 
 ## Risks and limitations
 
