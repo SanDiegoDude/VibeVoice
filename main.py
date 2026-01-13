@@ -65,6 +65,7 @@ def get_attention_implementation(device_type: str):
 from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 from vibevoice.modular.streamer import AudioStreamer
+from vibevoice.utils.vocal_isolation import VocalIsolator, clear_vocal_isolator_cache
 from transformers.utils import logging
 from transformers import set_seed
 try:
@@ -1172,6 +1173,88 @@ class VibeVoiceDemo:
         
         return normalized_samples
     
+    def isolate_voice_samples(self, voice_samples: list, speaker_names: list = None, sample_rate: int = 24000) -> tuple:
+        """
+        Isolate vocals from voice samples to remove background music/noise.
+        
+        Uses a dedicated VocalIsolator instance that is cleaned up after processing
+        to ensure VRAM is freed (especially important in LOD mode).
+        
+        Args:
+            voice_samples: List of audio numpy arrays
+            speaker_names: List of speaker names (for debug file saving)
+            sample_rate: Sample rate of the audio samples
+            
+        Returns:
+            Tuple of (isolated_samples list, error_message or None)
+        """
+        if not voice_samples:
+            return voice_samples, None
+        
+        isolated_samples = []
+        error_message = None
+        isolator = None
+        
+        try:
+            # Create a fresh isolator instance (will be cleaned up after)
+            isolator = VocalIsolator(device=self.device, debug=self.debug)
+            
+            for i, sample in enumerate(voice_samples):
+                if len(sample) > 0:
+                    try:
+                        # Use the vocal isolation module
+                        isolated = isolator.isolate(sample, sample_rate=sample_rate)
+                        isolated_samples.append(isolated)
+                    except Exception as e:
+                        # NO SILENT FALLBACK - fail openly and report the error
+                        error_str = str(e)
+                        if self.debug:
+                            import traceback
+                            error_str = f"{e}\n{traceback.format_exc()}"
+                        error_message = f"Vocal isolation failed for sample {i}: {error_str}"
+                        print(f"❌ {error_message}")
+                        # Return original samples on failure
+                        return voice_samples, error_message
+                else:
+                    isolated_samples.append(sample)
+            
+            # Debug mode: save isolated samples to custom_voices/debug/
+            if self.debug and speaker_names:
+                self._save_debug_voice_samples(isolated_samples, speaker_names, sample_rate, suffix="_isolated")
+            
+            return isolated_samples, None
+            
+        finally:
+            # ALWAYS clean up the isolator to free VRAM
+            if isolator is not None:
+                del isolator
+                # Also clear any global cache that might have been used
+                clear_vocal_isolator_cache()
+                # Force CUDA memory cleanup if available
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                if self.debug:
+                    print("🔍 DEBUG: Vocal isolation model unloaded, VRAM freed")
+    
+    def _save_debug_voice_samples(self, samples: list, speaker_names: list, sample_rate: int, suffix: str = ""):
+        """Save voice samples to debug directory for inspection."""
+        try:
+            debug_dir = os.path.join(os.path.dirname(__file__), "custom_voices", "debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            for i, (sample, name) in enumerate(zip(samples, speaker_names)):
+                if len(sample) > 0:
+                    # Clean the speaker name for filename
+                    clean_name = name.replace("/", "_").replace("\\", "_")
+                    filename = f"{clean_name}{suffix}.wav"
+                    filepath = os.path.join(debug_dir, filename)
+                    
+                    # Save as WAV file
+                    sf.write(filepath, sample, sample_rate)
+                    print(f"🔍 DEBUG: Saved voice sample to {filepath}")
+        except Exception as e:
+            print(f"🔍 DEBUG: Failed to save debug voice samples: {e}")
+    
     def generate_podcast_streaming(self, 
                                  num_speakers: int,
                                  script: str,
@@ -1186,6 +1269,7 @@ class VibeVoiceDemo:
                                  top_p: float = 0.95,
                                  top_k: int = 0,
                                  negative_prompt: str = "",
+                                 isolate_voices: bool = True,
                                  normalize_voices: bool = False) -> Iterator[tuple]:
         try:
             
@@ -1254,10 +1338,30 @@ class VibeVoiceDemo:
                     raise gr.Error(f"Error: Failed to load audio for {speaker_name}")
                 voice_samples.append(audio_data)
             
+            # Debug mode: save original samples before any processing
+            if self.debug:
+                self._save_debug_voice_samples(voice_samples, selected_speakers, 24000, suffix="_original")
+            
+            # Apply vocal isolation if requested (before normalization)
+            if isolate_voices:
+                voice_samples, isolation_error = self.isolate_voice_samples(
+                    voice_samples, 
+                    speaker_names=selected_speakers,
+                    sample_rate=24000
+                )
+                if isolation_error:
+                    log += f"⚠️ Vocal isolation FAILED: {isolation_error}\n"
+                    log += "   Continuing with original voice samples...\n"
+                else:
+                    log += "🎤 Vocal isolation applied (model unloaded to free VRAM)\n"
+            
             # Apply voice normalization if requested
             if normalize_voices:
                 voice_samples = self.normalize_voice_samples(voice_samples)
                 log += "🔊 Voice normalization applied\n"
+                # Debug mode: save normalized samples
+                if self.debug:
+                    self._save_debug_voice_samples(voice_samples, selected_speakers, 24000, suffix="_normalized")
             
             # log += f"✅ Loaded {len(voice_samples)} voice samples\n"
             
@@ -2644,12 +2748,16 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                 
                 # Voice Input Settings
                 with gr.Accordion("🎤 Voice Input Settings", open=False):
+                    isolate_voices = gr.Checkbox(
+                        value=True,
+                        label="Isolate input voices",
+                        info="Remove background music/noise from voice samples using AI vocal isolation (recommended)"
+                    )
                     normalize_voices = gr.Checkbox(
                         value=False,
                         label="Normalize voices",
                         info="Normalize all voice samples to similar volume levels to prevent jarring volume differences"
                     )
-                    # Future voice processing options can be added here
                 
                 # Model selector
                 gr.Markdown("### 🤖 **Model Selection**")
@@ -2939,7 +3047,8 @@ Or paste text directly and it will auto-assign speakers.""",
                 top_p_val = float(speakers_and_params[8])
                 top_k_val = int(speakers_and_params[9])
                 negative_prompt_val = speakers_and_params[10] or ""
-                normalize_voices_val = bool(speakers_and_params[11]) if len(speakers_and_params) > 11 else False
+                isolate_voices_val = bool(speakers_and_params[11]) if len(speakers_and_params) > 11 else True
+                normalize_voices_val = bool(speakers_and_params[12]) if len(speakers_and_params) > 12 else False
 
                 # Clear outputs and reset visibility at start
                 yield None, gr.update(value=None, visible=False), gr.update(value="", visible=False), "🎙️ Starting generation...", gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
@@ -2961,6 +3070,7 @@ Or paste text directly and it will auto-assign speakers.""",
                     top_p=top_p_val,
                     top_k=top_k_val,
                     negative_prompt=negative_prompt_val,
+                    isolate_voices=isolate_voices_val,
                     normalize_voices=normalize_voices_val
                 ):
                     final_log = log
@@ -3025,7 +3135,7 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, normalize_voices],
+            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices],
             outputs=[audio_output, complete_audio_output, scene_title, log_output, streaming_status, generate_btn, stop_btn],
             queue=True  # Enable Gradio's built-in queue
         )
@@ -3374,7 +3484,7 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, normalize_voices],
+            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices],
             outputs=[audio_output, complete_audio_output, scene_title, log_output, streaming_status, generate_btn, stop_btn],
             queue=True  # Enable Gradio's built-in queue for audio generation
         )

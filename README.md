@@ -26,6 +26,14 @@
 - **💾 Memory Efficiency**: VRAM drops to near-zero between generations (not just "unreserved" but fully reclaimed by OS)
 - **🏗️ Architectural Improvement**: Solves the long-standing issue of PyTorch's CUDA allocator holding onto reserved memory
 
+### What's New (2025-01-13)
+
+- **🎤 Vocal Isolation**: AI-powered vocal isolation using [Mel-Band-Roformer](https://github.com/KimberleyJensen/Mel-Band-Roformer-Vocal-Model) to remove background music/noise from voice samples
+- **Enabled by Default**: The "Isolate input voices" option is on by default for cleaner voice cloning
+- **Auto Model Download**: Vocal isolation model automatically downloads from HuggingFace on first use
+- **VRAM Efficient**: Isolation model is loaded, used, and unloaded before main generation to maximize available VRAM
+- **Debug Mode**: Use `--debug` to save voice samples at each processing stage to `custom_voices/debug/`
+
 ### What's New (2025-09-21)
 
 - Dedicated AI Chat interface separate from the main script editor
@@ -80,6 +88,7 @@ A comprehensive Gradio interface for generating high-quality multi-speaker dialo
 
 - **Multi-Speaker Support**: Generate dialogue with up to 4 distinct speakers
 - **Model Selection**: Choose between VibeVoice-7B-Preview and VibeVoice-1.5B models
+- **Vocal Isolation**: AI-powered removal of background music/noise from voice samples (enabled by default)
 - **Voice Normalization**: Automatically normalize voice sample volumes for consistent audio quality
 - **Advanced Settings**: Fine-tune generation parameters (CFG scale, diffusion steps, temperature, etc.)
 - **AI Script Generation**: Generate dialogue scripts using OpenAI GPT-4.1-mini or compatible servers
@@ -121,6 +130,46 @@ Traditional model unloading only marks GPU memory as "unreserved" but PyTorch's 
 - **Can't Stop Mid-Generation**: Must wait for generation to complete
 
 **Recommended for**: Systems with limited VRAM, running multiple AI services, or when you need guaranteed memory cleanup between generations.
+
+### 🎤 Vocal Isolation
+
+VibeVoice includes AI-powered vocal isolation to automatically remove background music, noise, and other non-vocal audio from your voice samples. This results in cleaner voice cloning and more consistent output.
+
+#### How It Works
+
+The vocal isolation feature uses the [Mel-Band-Roformer](https://github.com/KimberleyJensen/Mel-Band-Roformer-Vocal-Model) model, a state-of-the-art audio source separation model. The implementation is based on the [ComfyUI-MelBandRoFormer](https://github.com/kijai/ComfyUI-MelBandRoFormer) project.
+
+1. **Auto-Download**: On first use, the model (~100MB) is automatically downloaded from HuggingFace
+2. **Processing**: Voice samples are processed to extract clean vocals before generation
+3. **VRAM Efficient**: The isolation model is loaded, used, and immediately unloaded before main generation
+4. **Order of Operations**: Isolation runs first, then normalization (if enabled)
+
+#### Settings
+
+Located in **🎤 Voice Input Settings** accordion:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| **Isolate input voices** | ✅ Enabled | Remove background music/noise using AI vocal isolation |
+| **Normalize voices** | ❌ Disabled | Normalize volume levels across all voice samples |
+
+#### Debug Mode
+
+When running with `--debug`, voice samples are saved to `custom_voices/debug/` at each processing stage:
+
+- `{speaker_name}_original.wav` - Raw input before any processing
+- `{speaker_name}_isolated.wav` - After vocal isolation (if enabled)
+- `{speaker_name}_normalized.wav` - After normalization (if enabled)
+
+This helps verify the vocal isolation quality and troubleshoot any issues.
+
+#### Requirements
+
+The vocal isolation feature requires additional dependencies (installed automatically with `pip install -e .`):
+
+```bash
+pip install rotary-embedding-torch einops
+```
 
 ### 🎯 Usage
 

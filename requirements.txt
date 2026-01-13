@@ -7,11 +7,17 @@ diffusers
 tqdm
 numpy
 scipy
+huggingface_hub
 
 # Audio processing
 librosa
 av
 aiortc
+soundfile
+
+# Vocal isolation (Mel-Band-Roformer)
+rotary-embedding-torch
+einops
 
 # UI and visualization
 gradio
