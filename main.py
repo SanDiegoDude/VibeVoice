@@ -515,6 +515,7 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
                     )
                     
                     print("[Worker] Starting generation with audio streamer...")
+                    print("[Worker] 🧠 Generating speech tokens with autoregressive model...", flush=True)
                     
                     # Generate with streaming (to catch EOS)
                     with torch.no_grad():
@@ -531,7 +532,7 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
                             },
                             negative_prompt_ids=negative_ids,
                             audio_streamer=audio_streamer,  # Use streamer to catch EOS
-                            verbose=False,
+                            verbose=self.debug,  # Enable verbose output in debug mode
                             refresh_negative=True,
                         )
                     
@@ -1812,6 +1813,9 @@ class VibeVoiceDemo:
             # Define a stop check function that can be called from generate
             def check_stop_generation():
                 return self.stop_generation
+            
+            # Print progress indicator for users
+            print("🧠 Generating speech tokens with autoregressive model...", flush=True)
                 
             # Prepare optional negative prompt ids
             negative_ids = None
@@ -1835,7 +1839,7 @@ class VibeVoiceDemo:
                 negative_prompt_ids=negative_ids,
                 audio_streamer=audio_streamer,
                 stop_check_fn=check_stop_generation,  # Pass the stop check function
-                verbose=False,  # Disable verbose in streaming mode
+                verbose=self.debug,  # Enable verbose output in debug mode
                 refresh_negative=True,
             )
             

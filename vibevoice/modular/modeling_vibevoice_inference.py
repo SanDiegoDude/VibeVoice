@@ -424,7 +424,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
 
         # Create progress iterator if verbose
         if kwargs.get("show_progress_bar", True):
-            progress_bar = tqdm(range(max_steps), desc="Generating", leave=False)
+            progress_bar = tqdm(range(max_steps), desc="Generating tokens", leave=True, position=0, ncols=80)
         else:
             progress_bar = range(max_steps)
         
