@@ -19,6 +19,13 @@ import torch
 import os
 import traceback
 
+# Check Gradio version for compatibility
+try:
+    GRADIO_VERSION = tuple(map(int, gr.__version__.split('.')[:2]))  # (major, minor)
+    GRADIO_HAS_SHOW_DOWNLOAD = GRADIO_VERSION < (6, 0)  # show_download_button removed in 6.0
+except:
+    GRADIO_HAS_SHOW_DOWNLOAD = True  # Default to True for safety
+
 # OpenAI imports
 try:
     from openai import OpenAI
@@ -3004,25 +3011,34 @@ Or paste text directly and it will auto-assign speakers.""",
                 )
                 
                 # Streaming audio output (outside of tabs for simpler handling)
-                audio_output = gr.Audio(
-                    label="Streaming Audio (Real-time)",
-                    type="numpy",
-                    elem_classes="audio-output",
-                    streaming=True,  # Enable streaming mode
-                    autoplay=True,
-                    visible=True
-                )
+                # Build kwargs conditionally based on Gradio version
+                streaming_audio_kwargs = {
+                    "label": "Streaming Audio (Real-time)",
+                    "type": "numpy",
+                    "elem_classes": "audio-output",
+                    "streaming": True,
+                    "autoplay": True,
+                    "visible": True
+                }
+                if GRADIO_HAS_SHOW_DOWNLOAD:
+                    streaming_audio_kwargs["show_download_button"] = False
+                
+                audio_output = gr.Audio(**streaming_audio_kwargs)
                 
                 # Complete audio output (non-streaming)
-                complete_audio_output = gr.Audio(
-                    label="Complete Audio (Download after generation)",
-                    type="numpy",
-                    elem_classes="audio-output complete-audio-section",
-                    streaming=False,  # Non-streaming mode
-                    autoplay=False,
-                    visible=False,  # Initially hidden, shown when audio is ready
-                    elem_id="complete-audio-output"
-                )
+                complete_audio_kwargs = {
+                    "label": "Complete Audio (Download after generation)",
+                    "type": "numpy",
+                    "elem_classes": "audio-output complete-audio-section",
+                    "streaming": False,
+                    "autoplay": False,
+                    "visible": False,
+                    "elem_id": "complete-audio-output"
+                }
+                if GRADIO_HAS_SHOW_DOWNLOAD:
+                    complete_audio_kwargs["show_download_button"] = True
+                
+                complete_audio_output = gr.Audio(**complete_audio_kwargs)
                 
                 # Simple gain control for the audio player
                 with gr.Row():
