@@ -1255,6 +1255,75 @@ class VibeVoiceDemo:
         except Exception as e:
             print(f"🔍 DEBUG: Failed to save debug voice samples: {e}")
     
+    def _save_generated_audio(self, audio_data: tuple, speaker_names: list, ai_topic: str = None) -> str:
+        """
+        Save generated audio to output directory with timestamp and speaker names.
+        
+        Args:
+            audio_data: Tuple of (sample_rate, audio_array)
+            speaker_names: List of speaker names used in generation
+            ai_topic: Optional AI-generated topic/title
+            
+        Returns:
+            Path to saved file
+        """
+        try:
+            from datetime import datetime
+            
+            # Create output directory
+            output_dir = os.path.join(os.path.dirname(__file__), "output")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Extract sample rate and audio
+            sample_rate, audio_array = audio_data
+            
+            # Build filename components
+            timestamp = datetime.now().strftime("%Y%m%d")
+            
+            # Clean and format speaker names (up to 4)
+            clean_speakers = []
+            for name in speaker_names[:4]:  # Limit to 4 speakers
+                # Remove path separators and clean the name
+                clean_name = name.split("/")[-1].split("\\")[-1]  # Get basename
+                clean_name = clean_name.replace(" ", "-").replace("_", "-")
+                # Remove common prefixes like "en-", "zh-" for cleaner names
+                if "-" in clean_name and len(clean_name.split("-")[0]) <= 2:
+                    clean_name = "-".join(clean_name.split("-")[1:])
+                clean_speakers.append(clean_name)
+            
+            speakers_str = "_".join(clean_speakers)
+            
+            # Clean and format topic
+            if ai_topic:
+                # Clean the topic for filename
+                clean_topic = ai_topic.replace(" ", "-").replace("/", "-").replace("\\", "-")
+                # Remove special characters
+                clean_topic = "".join(c for c in clean_topic if c.isalnum() or c in ["-", "_"])
+                # Limit length
+                clean_topic = clean_topic[:50]
+            else:
+                clean_topic = "audio-generation"
+            
+            # Find next available counter
+            counter = 1
+            while True:
+                filename = f"{timestamp}_{speakers_str}_{clean_topic}_{counter:03d}.wav"
+                filepath = os.path.join(output_dir, filename)
+                if not os.path.exists(filepath):
+                    break
+                counter += 1
+            
+            # Save the audio file
+            sf.write(filepath, audio_array, sample_rate)
+            
+            return filepath
+            
+        except Exception as e:
+            print(f"❌ Failed to save output audio: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     def generate_podcast_streaming(self, 
                                  num_speakers: int,
                                  script: str,
@@ -2759,6 +2828,14 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                         info="Normalize all voice samples to similar volume levels to prevent jarring volume differences"
                     )
                 
+                # Output Settings
+                with gr.Accordion("💾 Output Settings", open=False):
+                    save_output = gr.Checkbox(
+                        value=True,
+                        label="Save generated audio to output folder",
+                        info="Automatically save generated audio to output/ directory with timestamp and speaker names"
+                    )
+                
                 # Model selector
                 gr.Markdown("### 🤖 **Model Selection**")
                 model_selector = gr.Dropdown(
@@ -2933,7 +3010,6 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_classes="audio-output",
                     streaming=True,  # Enable streaming mode
                     autoplay=True,
-                    show_download_button=False,  # Explicitly show download button
                     visible=True
                 )
                 
@@ -2944,7 +3020,6 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_classes="audio-output complete-audio-section",
                     streaming=False,  # Non-streaming mode
                     autoplay=False,
-                    show_download_button=True,  # Explicitly show download button
                     visible=False,  # Initially hidden, shown when audio is ready
                     elem_id="complete-audio-output"
                 )
@@ -3049,6 +3124,7 @@ Or paste text directly and it will auto-assign speakers.""",
                 negative_prompt_val = speakers_and_params[10] or ""
                 isolate_voices_val = bool(speakers_and_params[11]) if len(speakers_and_params) > 11 else True
                 normalize_voices_val = bool(speakers_and_params[12]) if len(speakers_and_params) > 12 else False
+                save_output_val = bool(speakers_and_params[13]) if len(speakers_and_params) > 13 else True
 
                 # Clear outputs and reset visibility at start
                 yield None, gr.update(value=None, visible=False), gr.update(value="", visible=False), "🎙️ Starting generation...", gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
@@ -3081,11 +3157,21 @@ Or paste text directly and it will auto-assign speakers.""",
                         # Extract title from script if available
                         title_html = ""
                         audio_label = "Complete Audio (Download after generation)"
+                        ai_topic = None
                         if hasattr(demo_instance, 'last_prompt_data') and demo_instance.last_prompt_data:
                             title = demo_instance.last_prompt_data.get('title', 'Generated Audio Scene')
+                            ai_topic = title  # Use for filename
                             title_html = f'<div class="scene-title">🎭 {title}</div>'
                             # Update audio label with title for better filename
                             audio_label = f"Complete Audio: {title} (Download after generation)"
+                        
+                        # Save output file if requested
+                        if save_output_val:
+                            # Get active speaker names (only up to num_speakers)
+                            active_speakers = [speakers[i] for i in range(int(num_speakers))]
+                            saved_path = demo_instance._save_generated_audio(complete_audio, active_speakers, ai_topic)
+                            if saved_path:
+                                log = log + f"\n💾 Audio saved to: {saved_path}\n"
                         
                         yield None, gr.update(value=complete_audio, visible=True, label=audio_label), gr.update(value=title_html, visible=True), log, gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
                         
@@ -3135,7 +3221,7 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices],
+            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices, save_output],
             outputs=[audio_output, complete_audio_output, scene_title, log_output, streaming_status, generate_btn, stop_btn],
             queue=True  # Enable Gradio's built-in queue
         )
@@ -3484,7 +3570,7 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices],
+            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices, save_output],
             outputs=[audio_output, complete_audio_output, scene_title, log_output, streaming_status, generate_btn, stop_btn],
             queue=True  # Enable Gradio's built-in queue for audio generation
         )

@@ -20,7 +20,7 @@ rotary-embedding-torch
 einops
 
 # UI and visualization
-gradio
+gradio>=4.0.0,<6.0.0  # Pin to avoid breaking changes in Gradio 6.0
 
 # Configuration and utilities
 ml-collections
