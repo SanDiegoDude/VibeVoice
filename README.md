@@ -415,117 +415,208 @@ Try your own samples at [Colab](https://colab.research.google.com/github/microso
 | VibeVoice-7B-Preview| 32K | ~45 min | [HF link](https://huggingface.co/vibevoice/VibeVoice-7B) |
 
 ## Installation
-We recommend to use NVIDIA Deep Learning Container to manage the CUDA environment. 
 
-### 🔧 Setup Virtual Environment (HIGHLY RECOMMENDED)
-Before installing dependencies, it's **highly recommended** to create a virtual environment to avoid conflicts with system packages:
+Pick **one** of the paths below (Direct Install or Docker) and follow it start to finish. Most people should use the **Direct Install**.
+
+### Prerequisites
+
+Before you begin, make sure you have the following installed on your system:
+
+| Requirement | Why you need it | How to check |
+|---|---|---|
+| **Python 3.8+** | Runs the application | `python --version` (or `python3 --version`) |
+| **pip** | Installs Python packages | `pip --version` (or `pip3 --version`) |
+| **Git** | Clones the repository | `git --version` |
+| **ffmpeg** | Processes audio files | `ffmpeg -version` |
+| **NVIDIA GPU + drivers** (recommended) | Fast speech generation | `nvidia-smi` |
+
+<details>
+<summary><b>How to install prerequisites if you're missing any</b></summary>
+
+**Python & pip** — Download from [python.org](https://www.python.org/downloads/). On Linux you can use your package manager:
+```bash
+sudo apt update && sudo apt install python3 python3-pip python3-venv -y   # Debian/Ubuntu
+```
+
+**Git** — Download from [git-scm.com](https://git-scm.com/downloads), or on Linux:
+```bash
+sudo apt update && sudo apt install git -y   # Debian/Ubuntu
+```
+
+**ffmpeg** — Download from [ffmpeg.org](https://ffmpeg.org/download.html), or on Linux:
+```bash
+sudo apt update && sudo apt install ffmpeg -y   # Debian/Ubuntu
+```
+
+**NVIDIA drivers** — Follow the [NVIDIA driver install guide](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/) for your OS. VibeVoice can fall back to CPU or Apple Silicon (MPS) if no NVIDIA GPU is available, but generation will be significantly slower.
+</details>
+
+---
+
+### 💻 Direct Installation (Recommended for most users)
+
+Open a terminal (Command Prompt or PowerShell on Windows) and run these commands **one group at a time**.
+
+#### Step 1 — Clone the repository
 
 ```bash
-# Create virtual environment
-python -m venv venv
+git clone https://github.com/microsoft/VibeVoice.git
+cd VibeVoice
+```
 
-# Activate virtual environment
-# On Linux/macOS:
+This downloads the source code and moves you into the project folder.
+
+#### Step 2 — Create and activate a virtual environment
+
+A virtual environment keeps VibeVoice's dependencies separate from the rest of your system so nothing conflicts.
+
+**Linux / macOS:**
+```bash
+python3 -m venv venv
 source venv/bin/activate
-# On Windows:
-# venv\Scripts\activate
-
-# Verify activation (should show venv path)
-which python
 ```
 
-### 🐳 Docker Installation (Recommended)
-1. Launch docker
-```bash
-# NVIDIA PyTorch Container 24.07 / 24.10 / 24.12 verified. 
-# Later versions are also compatible.
-sudo docker run --privileged --net=host --ipc=host --ulimit memlock=-1:-1 --ulimit stack=-1:-1 --gpus all --rm -it  nvcr.io/nvidia/pytorch:24.07-py3
-
-## If flash attention is not included in your docker environment, you need to install it manually
-## Refer to https://github.com/Dao-AILab/flash-attention for installation instructions
-# pip install flash-attn --no-build-isolation
-```
-
-2. Install from github
-```bash
-git clone https://github.com/microsoft/VibeVoice.git
-cd VibeVoice/
-
-# Create and activate virtual environment (recommended)
+**Windows (Command Prompt):**
+```cmd
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+venv\Scripts\activate
+```
 
-# Install PyTorch with CUDA support (required for this application)
+**Windows (PowerShell):**
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+> After activation your terminal prompt should show `(venv)` at the beginning. All remaining commands assume the virtual environment is active.
+
+#### Step 3 — Install PyTorch
+
+PyTorch is the machine-learning framework VibeVoice is built on. Install the version that matches your hardware:
+
+**NVIDIA GPU (CUDA 12.1) — recommended:**
+```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
 
-# Install OpenAI (required for AI script generation)
-pip install openai
+**CPU only or Apple Silicon (MPS):**
+```bash
+pip install torch torchvision torchaudio
+```
 
-# Install FlashAttention2 (optional, for better performance on CUDA)
-# For Windows users, use pre-built wheels:
-# pip install flash-attn --no-build-isolation
-# Or download from: https://github.com/sunsetcoder/flash-attention-windows
+> Not sure which to pick? Run `nvidia-smi`. If it prints GPU info, use the CUDA version. If it errors, use the CPU version. For other CUDA versions, see the [PyTorch install matrix](https://pytorch.org/get-started/locally/).
 
-# Install the VibeVoice package in editable mode (required for --lod mode)
+#### Step 4 — Install VibeVoice and all remaining dependencies
+
+```bash
 pip install -e .
 ```
 
-### 💻 Direct Installation (Alternative)
-If you prefer not to use Docker, you can install directly on your system:
+This reads the project's `pyproject.toml` file and installs everything VibeVoice needs (transformers, gradio, librosa, openai, etc.). The `-e` ("editable") flag means Python uses the code right here in this folder, so any updates you `git pull` are picked up automatically.
+
+#### Step 5 (optional) — Install FlashAttention2 for faster generation
+
+FlashAttention2 speeds up the model on NVIDIA GPUs. It is **not required** — VibeVoice falls back to a compatible attention implementation automatically.
 
 ```bash
-# Clone the repository
-git clone https://github.com/microsoft/VibeVoice.git
-cd VibeVoice/
-
-# Create and activate virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install PyTorch with CUDA support (required for this application)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Install OpenAI (required for AI script generation)
-pip install openai
-
-# Install FlashAttention2 (optional, for better performance on CUDA)
-# For Windows users, use pre-built wheels:
-# pip install flash-attn --no-build-isolation
-# Or download from: https://github.com/sunsetcoder/flash-attention-windows
-
-# Install dependencies in editable mode (required for --lod mode)
-pip install -e .
+pip install flash-attn --no-build-isolation
 ```
 
-**Note**: Direct installation requires CUDA-compatible GPU drivers and PyTorch with CUDA support.
+> **Windows users:** Building from source can be tricky. Pre-built wheels are available at [sunsetcoder/flash-attention-windows](https://github.com/sunsetcoder/flash-attention-windows).
 
-### 🔧 Device Compatibility & Fallback Support
+#### Step 6 — Configure your API key (for AI script generation)
 
-VibeVoice now supports multiple device types with automatic fallback mechanisms:
+The AI scriptwriter needs an LLM API key. Copy the sample config and edit it:
 
-- **CUDA (NVIDIA GPUs)**: Full support with FlashAttention2 for optimal performance
-- **Apple Silicon (MPS)**: Native support for M1/M2/M3 Macs using Metal Performance Shaders
-- **CPU**: Fallback support for systems without GPU acceleration
-- **Windows**: Pre-built FlashAttention2 wheels available for easier installation
-- **Robust Fallback**: If FlashAttention2 fails, automatically falls back to SDPA
+**Linux / macOS:**
+```bash
+cp .env-sample .env
+nano .env          # or open .env in any text editor
+```
+
+**Windows:**
+```cmd
+copy .env-sample .env
+notepad .env
+```
+
+Inside `.env`, replace `your-open-ai-key` with your actual API key. If you don't have an OpenAI key, you can use a **free Google Gemini key** — see the comments in `.env-sample` for details. AI script generation is optional; VibeVoice works without it.
+
+#### Step 7 — Run VibeVoice
+
+```bash
+python main.py
+```
+
+After a moment you'll see a local URL (usually `http://localhost:7860`). Open it in your browser and you're ready to go.
+
+> **Tip:** Add `--lod` for load-on-demand mode, which uses much less VRAM when idle:
+> ```bash
+> python main.py --lod
+> ```
+
+#### Verify everything is working
+
+If something went wrong during install, you can run a quick sanity check:
+
+```bash
+python -c "import torch; print('PyTorch', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+python -c "import vibevoice; print('VibeVoice package OK')"
+```
+
+---
+
+### 🐳 Docker Installation (Alternative)
+
+Docker is useful if you want a pre-configured CUDA environment without installing drivers on the host.
+
+```bash
+# 1. Launch the NVIDIA PyTorch container (24.07 / 24.10 / 24.12 verified)
+sudo docker run --privileged --net=host --ipc=host \
+  --ulimit memlock=-1:-1 --ulimit stack=-1:-1 \
+  --gpus all --rm -it nvcr.io/nvidia/pytorch:24.07-py3
+
+# 2. Inside the container, clone and install
+git clone https://github.com/microsoft/VibeVoice.git
+cd VibeVoice
+pip install -e .
+
+# 3. (Optional) Install FlashAttention2 if not bundled in your container
+pip install flash-attn --no-build-isolation
+
+# 4. Configure your API key and run
+cp .env-sample .env
+# edit .env with your API key
+python main.py
+```
+
+---
 
 ### 🪟 Windows Quick Start
 
-For Windows users, we provide a convenient batch script to launch VibeVoice:
+For Windows users, we provide a convenient batch script:
 
-1. **Install dependencies** (follow installation instructions above)
-2. **Configure API keys**: Copy `.env-sample` to `.env` and add your keys
+1. Follow the **Direct Installation** steps above
+2. Ensure `.env` is configured with your API key
 3. **Double-click** `run_vibevoice.bat` to launch
 
 The batch script will:
-- ✅ Check for virtual environment
-- ✅ Activate the virtual environment automatically  
-- ✅ Launch VibeVoice on `http://localhost:7590`
-- ✅ Provide helpful error messages if setup is incomplete
+- Check for and activate the virtual environment
+- Launch VibeVoice on `http://localhost:7590`
+- Show helpful error messages if setup is incomplete
 
-**Load-on-Demand Mode**: To use faster startup (loads model when needed), edit `run_vibevoice.bat`:
-- Comment out: `python main.py`
-- Uncomment: `python main.py --lod`
+> **Load-on-Demand Mode**: Edit `run_vibevoice.bat`, comment out `python main.py`, and uncomment `python main.py --lod`.
+
+---
+
+### 🔧 Device Compatibility & Fallback Support
+
+VibeVoice supports multiple hardware configurations with automatic fallback:
+
+- **CUDA (NVIDIA GPUs)** — Full support with optional FlashAttention2 for best performance
+- **Apple Silicon (MPS)** — Native support for M1/M2/M3/M4 Macs via Metal Performance Shaders
+- **CPU** — Works everywhere, but generation is much slower
+- **Robust Fallback** — If FlashAttention2 is unavailable, VibeVoice automatically uses PyTorch's built-in SDPA
 
 ## Usages
 
@@ -537,7 +628,7 @@ We observed users may encounter occasional instability when synthesizing Chinese
 
 ### Usage 1: Launch Gradio demo
 ```bash
-apt update && apt install ffmpeg -y # for demo
+# Make sure ffmpeg is installed (see Prerequisites above)
 
 # For 1.5B model
 python demo/gradio_demo.py --model_path microsoft/VibeVoice-1.5B
