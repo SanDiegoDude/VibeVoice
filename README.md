@@ -16,6 +16,12 @@
 <img src="Figures/VibeVoice_logo.png" alt="VibeVoice Logo" width="300">
 </div>
 
+<div align="center">
+
+**[Installation](#installation)** · **[Quick Start](#step-7--run-vibevoice)** · **[Models](#models)** · **[Usage](#usages)** · **[FAQ](#faq)** · **[Demos](#-demo-examples)**
+
+</div>
+
 ## 🚀 VibeVoice Dialogue Generation (main.py)
 
 ### What's New (2024-12-14)
